@@ -116,6 +116,53 @@ class PowerBIRestConnector:
             logger.error(f"Failed to list datasets: {str(e)}")
             return []
 
+
+    def get_dataset(self, workspace_id: str, dataset_id: str) -> Dict[str, Any]:
+        """Get dataset metadata from the Power BI REST API."""
+        if not self.access_token and not self.authenticate():
+            return {}
+        url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}"
+        response = requests.get(url, headers=self._get_headers(), timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def execute_dax_query(self, workspace_id: str, dataset_id: str, dax_query: str) -> List[Dict[str, Any]]:
+        """Execute a read-only DAX query using the Power BI REST Execute Queries API."""
+        if not self.access_token and not self.authenticate():
+            return []
+        url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/executeQueries"
+        payload = {
+            "queries": [{"query": dax_query}],
+            "serializerSettings": {"includeNulls": True},
+        }
+        response = requests.post(url, headers=self._get_headers(), json=payload, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+        results = data.get("results") or []
+        if not results:
+            return []
+        tables = results[0].get("tables") or []
+        if not tables:
+            return []
+        return tables[0].get("rows") or []
+
+    def get_semantic_model_metadata(self, workspace_id: str, dataset_id: str) -> Dict[str, Any]:
+        """Return semantic model metadata available through REST and Execute Queries."""
+        dataset = self.get_dataset(workspace_id, dataset_id)
+        metadata = {"dataset": dataset, "tables": [], "columns": [], "measures": [], "relationships": []}
+        queries = {
+            "tables": "EVALUATE INFO.VIEW.TABLES()",
+            "columns": "EVALUATE INFO.VIEW.COLUMNS()",
+            "measures": "EVALUATE INFO.VIEW.MEASURES()",
+            "relationships": "EVALUATE INFO.VIEW.RELATIONSHIPS()",
+        }
+        for key, query in queries.items():
+            try:
+                metadata[key] = self.execute_dax_query(workspace_id, dataset_id, query)
+            except Exception as exc:
+                metadata[f"{key}_error"] = str(exc)
+        return metadata
+
     # ==================== REFRESH OPERATIONS ====================
 
     def resolve_dataset(self, workspace_name: str, dataset_name: str):
