@@ -15,12 +15,21 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from mcp.server import Server, NotificationOptions
-from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
+import uvicorn
 from mcp.types import (
     Tool, TextContent, ToolAnnotations,
     Resource, ResourceTemplate,
     Prompt, PromptArgument, PromptMessage, GetPromptResult,
     Completion,
+    ListToolsResult, CallToolResult, ListResourcesResult, ListResourceTemplatesResult,
+    ReadResourceResult, ListPromptsResult, CompleteResult, TextResourceContents,
+    PaginatedRequestParams, CallToolRequestParams, ReadResourceRequestParams,
+    GetPromptRequestParams, CompleteRequestParams,
 )
 from mcp.server.models import InitializationOptions
 from urllib.parse import unquote
@@ -83,10 +92,6 @@ INFO_CALCDEP_NOTE = (
 
 # Import connectors
 from powerbi_rest_connector import PowerBIRestConnector
-from powerbi_xmla_connector import PowerBIXmlaConnector
-from powerbi_desktop_connector import PowerBIDesktopConnector
-from powerbi_tom_connector import PowerBITOMConnector
-from powerbi_pbip_connector import PowerBIPBIPConnector
 
 # Pure-Python model analysis (BPA + AI-readiness), refresh diagnostics, governance
 import model_analysis
@@ -100,7 +105,6 @@ import bpa_authoring
 import dax_generator
 import star_schema
 import tmdl_authoring
-import desktop_bridge
 
 # Import security layer
 from security import SecurityLayer, get_security_layer
@@ -108,10 +112,43 @@ from security.access_policy import AccessPolicyEngine
 
 
 class PowerBIMCPServer:
-    """Power BI MCP Server supporting Cloud and Desktop connectivity"""
+    """REST-only, read-only Power BI MCP Server."""
+
+    _REST_READONLY_TOOLS = {
+        "list_workspaces", "list_datasets", "list_tables", "list_columns",
+        "execute_dax", "get_model_info", "describe_semantic_model",
+        "answer_query_plan", "security_status", "security_audit_log",
+        "validate_dax", "run_bpa", "audit_ai_readiness", "analyze_model_storage",
+        "analyze_query_performance", "model_diff", "pre_deploy_gate",
+        "refresh_doctor", "find_unused_objects", "impact_analysis", "run_dax_tests",
+        "verify_audit_integrity", "cross_workspace_lineage", "fleet_refresh_monitor",
+        "usage_and_orphan_analytics", "dax_lint", "dax_suggest_rewrite",
+        "generate_svg_measure", "audit_naming", "bpa_validate_rules",
+        "bpa_audit_rule_sources", "generate_measure_suite", "audit_star_schema",
+        "scan_referential_integrity",
+    }
+
+    _REMOVED_TOOLS = {
+        "desktop_discover_instances", "desktop_connect", "desktop_list_tables",
+        "desktop_list_columns", "desktop_list_measures", "desktop_execute_dax",
+        "desktop_get_model_info", "desktop_list_rls_roles", "desktop_set_rls_role",
+        "desktop_rls_status", "batch_rename_tables", "batch_rename_columns",
+        "batch_rename_measures", "batch_update_measures", "create_measure",
+        "delete_measure", "tom_begin_transaction", "tom_commit_transaction",
+        "tom_rollback_transaction", "create_relationship", "delete_relationship",
+        "batch_create_measures", "pbip_load_project", "pbip_get_project_info",
+        "pbip_rename_tables", "pbip_rename_columns", "pbip_rename_measures",
+        "pbip_fix_broken_visuals", "pbip_fix_dax_quoting", "pbip_scan_broken_refs",
+        "pbip_validate", "pbir_add_page", "pbir_add_visual", "pbir_bind_fields",
+        "pbir_validate_report", "pbip_add_measures", "pbip_create_date_table",
+        "pbip_add_calculation_group", "pbip_add_hierarchy", "bridge_status",
+        "bridge_manifest", "bridge_screenshot", "bridge_reload", "export_data_dictionary",
+        "model_snapshot", "pbix_inspect", "pbix_extract", "scan_measure_dependencies",
+        "scan_table_dependencies",
+    }
 
     def __init__(self):
-        self.server = Server("powerbi-mcp-v2")
+        self.server = Server("powerbi-mcp-rest-readonly")
 
         # Cloud credentials (optional for Desktop-only usage)
         self.tenant_id = os.getenv("TENANT_ID", "")
@@ -120,13 +157,6 @@ class PowerBIMCPServer:
 
         # Connector instances
         self.rest_connector: Optional[PowerBIRestConnector] = None
-        self.xmla_connector_cache: Dict[str, PowerBIXmlaConnector] = {}
-        self.desktop_connector: Optional[PowerBIDesktopConnector] = None
-        self.tom_connector: Optional[PowerBITOMConnector] = None
-        self.pbip_connector: Optional[PowerBIPBIPConnector] = None
-
-        # When a TOM transaction is open, write tools defer SaveChanges until commit.
-        self._tom_transaction_active = False
 
         # Initialize security layer
         config_path = Path(__file__).parent.parent / "config" / "policies.yaml"
@@ -143,22 +173,10 @@ class PowerBIMCPServer:
         self._tool_annotations = self._build_tool_annotations()
         self._prompts = self._build_prompts()
 
-        # Read-only / lockdown mode: when POWERBI_MCP_READONLY=true, every write tool is
-        # refused. Write tools = destructive ops plus the non-destructive creates/commit.
-        self._read_only = os.getenv("POWERBI_MCP_READONLY", "false").lower() == "true"
-        # Tools refused in read-only/lockdown mode = anything that mutates a model/report
-        # (destructive-hinted) plus the non-destructive creates/commit, plus the tools that
-        # WRITE FILES to disk (a data dictionary, a snapshot, an extracted PBIX). Session-only
-        # tools (desktop_connect, desktop_set_rls_role) are intentionally NOT refused: they let
-        # an agent connect and read under lockdown without persisting any change.
-        self._write_tools = (
-            {n for n, a in self._tool_annotations.items() if a.destructiveHint}
-            | {"create_measure", "create_relationship", "tom_commit_transaction",
-               "batch_create_measures"}
-            | {"export_data_dictionary", "model_snapshot", "pbix_extract", "bridge_screenshot"}
-        )
-        # generate_measure_suite is generation-only by default; its write targets
-        # (target="pbip"/"live") are refused inside the handler when read-only.
+        # REST-only build: write, Desktop, Desktop Bridge, XMLA, TOM, PBIP, and PBIR tools
+        # are not exposed. Runtime refusal remains as defense-in-depth if a stale client calls one.
+        self._read_only = True
+        self._write_tools = set(self._tool_dispatch) - self._REST_READONLY_TOOLS
 
         self._setup_handlers()
 
@@ -245,7 +263,7 @@ class PowerBIMCPServer:
         """Map tool name -> coroutine handler. Every entry accepts the args dict
         (handlers that take no arguments simply ignore it). Replaces the former
         34-branch if/elif chain so list_tools and call_tool cannot drift apart."""
-        return {
+        dispatch = {
             # Desktop
             "desktop_discover_instances": lambda a: self._handle_desktop_discover(),
             "desktop_connect": lambda a: self._handle_desktop_connect(a),
@@ -254,13 +272,15 @@ class PowerBIMCPServer:
             "desktop_list_measures": lambda a: self._handle_desktop_list_measures(),
             "desktop_execute_dax": lambda a: self._handle_desktop_execute_dax(a),
             "desktop_get_model_info": lambda a: self._handle_desktop_get_model_info(),
-            # Cloud
+            # Cloud REST API
             "list_workspaces": lambda a: self._handle_list_workspaces(),
             "list_datasets": lambda a: self._handle_list_datasets(a),
             "list_tables": lambda a: self._handle_list_tables(a),
             "list_columns": lambda a: self._handle_list_columns(a),
             "execute_dax": lambda a: self._handle_execute_dax(a),
             "get_model_info": lambda a: self._handle_get_model_info(a),
+            "describe_semantic_model": lambda a: self._handle_describe_semantic_model(a),
+            "answer_query_plan": lambda a: self._handle_answer_query_plan(a),
             # Security
             "security_status": lambda a: self._handle_security_status(),
             "security_audit_log": lambda a: self._handle_security_audit_log(a),
@@ -348,6 +368,7 @@ class PowerBIMCPServer:
             "bridge_screenshot": lambda a: self._handle_bridge_screenshot(a),
             "bridge_reload": lambda a: self._handle_bridge_reload(a),
         }
+        return {k: v for k, v in dispatch.items() if k in self._REST_READONLY_TOOLS}
 
     def _build_tool_annotations(self):
         """Map tool name -> ToolAnnotations. Hints let MCP clients auto-approve safe
@@ -365,7 +386,7 @@ class PowerBIMCPServer:
         cloud_read = ann(True, open_world=True)
         local_state = ann(False, destructive=False, idempotent=True, open_world=False)
         local_destructive = ann(False, destructive=True, open_world=False)
-        return {
+        annotations = {
             # Desktop reads (local)
             "desktop_discover_instances": local_read,
             "desktop_connect": local_state,
@@ -466,10 +487,206 @@ class PowerBIMCPServer:
             "bridge_manifest": local_read,
             "bridge_screenshot": ann(False, destructive=False, idempotent=True, open_world=False),  # writes PNGs
             "bridge_reload": local_destructive,  # can discard unsaved Desktop changes (guarded)
+            "describe_semantic_model": cloud_read,
+            "answer_query_plan": cloud_read,
         }
+        return {k: v for k, v in annotations.items() if k in self._REST_READONLY_TOOLS}
+
+
+    def _semantic_agent_tools(self) -> List[Tool]:
+        """Additional REST-only tools that help autonomous agents understand a model."""
+        common = {
+            "workspace_name": {"type": "string", "description": "Power BI workspace name"},
+            "dataset_name": {"type": "string", "description": "Semantic model/dataset name"},
+        }
+        return [
+            Tool(
+                name="describe_semantic_model",
+                description=(
+                    "Build an agent-ready semantic map of a Power BI model using REST Execute Queries: "
+                    "visible tables, columns, measures, relationships, hidden flags, descriptions, "
+                    "and suggested queryable entities. Use this before answering business questions."
+                ),
+                inputSchema={"type": "object", "properties": common, "required": ["workspace_name", "dataset_name"]},
+                outputSchema={"type": "object", "properties": {"model": {"type": "object"}, "guidance": {"type": "array"}}},
+            ),
+            Tool(
+                name="answer_query_plan",
+                description=(
+                    "Given a natural-language user question and a semantic model, suggest whether existing "
+                    "measures can answer it or whether to generate a read-only DAX query on the fly. "
+                    "Returns candidate measures/tables and a draft DAX query; it does not execute unless execute=true."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        **common,
+                        "question": {"type": "string"},
+                        "execute": {"type": "boolean", "default": False},
+                        "max_rows": {"type": "integer", "default": 100},
+                    },
+                    "required": ["workspace_name", "dataset_name", "question"],
+                },
+                outputSchema={"type": "object", "properties": {"plan": {"type": "object"}, "rows": {"type": "array"}}},
+            ),
+        ]
+
+    def _semantic_model_from_rest_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        g = self._row_get
+        tables = {g(r, "Name"): {"name": g(r, "Name"), "is_hidden": bool(g(r, "IsHidden")),
+                 "description": g(r, "Description") or "", "columns": [], "measures": []}
+                  for r in metadata.get("tables", []) if g(r, "Name")}
+        for r in metadata.get("columns", []):
+            table = g(r, "Table") or g(r, "TableName")
+            if not table:
+                continue
+            tables.setdefault(table, {"name": table, "is_hidden": False, "description": "", "columns": [], "measures": []})
+            tables[table]["columns"].append({"name": g(r, "Name"), "data_type": g(r, "DataType"),
+                "is_hidden": bool(g(r, "IsHidden")), "description": g(r, "Description") or "",
+                "summarize_by": g(r, "SummarizeBy"), "data_category": g(r, "DataCategory")})
+        for r in metadata.get("measures", []):
+            table = g(r, "Table") or g(r, "TableName")
+            tables.setdefault(table, {"name": table, "is_hidden": False, "description": "", "columns": [], "measures": []})
+            tables[table]["measures"].append({"name": g(r, "Name"), "expression": g(r, "Expression"),
+                "format_string": g(r, "FormatString"), "description": g(r, "Description") or "",
+                "is_hidden": bool(g(r, "IsHidden"))})
+        relationships = [{"from_table": g(r, "FromTable"), "from_column": g(r, "FromColumn"),
+            "to_table": g(r, "ToTable"), "to_column": g(r, "ToColumn"), "is_active": g(r, "IsActive")}
+            for r in metadata.get("relationships", [])]
+        return {"dataset": metadata.get("dataset", {}), "tables": list(tables.values()), "relationships": relationships}
+
+    async def _handle_describe_semantic_model(self, args: Dict[str, Any]):
+        workspace = args.get("workspace_name")
+        dataset = args.get("dataset_name")
+        if not workspace or not dataset:
+            return ("Error: workspace_name and dataset_name are required", {"error": "missing_arguments"})
+        connector, workspace_id, dataset_id, err = await self._resolve_rest_dataset(workspace, dataset)
+        if err:
+            return (f"Error: {err}", {"error": err})
+        metadata = await asyncio.get_event_loop().run_in_executor(None, connector.get_semantic_model_metadata, workspace_id, dataset_id)
+        model = self._semantic_model_from_rest_metadata(metadata)
+        visible_tables = [t for t in model["tables"] if not t.get("is_hidden")]
+        measures = [m for t in visible_tables for m in t.get("measures", []) if not m.get("is_hidden")]
+        guidance = [
+            "Use visible measures first for business metrics; only generate DAX when no suitable measure exists.",
+            "Use table/column descriptions and relationships to choose dimensions and filters.",
+            "All query execution is read-only through the Power BI REST Execute Queries API.",
+        ]
+        text = f"Semantic model '{dataset}' has {len(visible_tables)} visible table(s), {len(measures)} visible measure(s), and {len(model['relationships'])} relationship(s)."
+        return (text + "\n\n" + json.dumps({"model": model, "guidance": guidance}, indent=2, default=str), {"model": model, "guidance": guidance})
+
+    async def _handle_answer_query_plan(self, args: Dict[str, Any]):
+        question = (args.get("question") or "").strip()
+        if not question:
+            return ("Error: question is required", {"error": "question is required"})
+        desc_text, desc = await self._handle_describe_semantic_model(args)
+        if "error" in desc:
+            return (desc_text, desc)
+        model = desc["model"]
+        qwords = {w.lower() for w in re.findall(r"[A-Za-z0-9_]+", question) if len(w) > 2}
+        candidates = []
+        for table in model.get("tables", []):
+            for measure in table.get("measures", []):
+                hay = " ".join([measure.get("name") or "", measure.get("description") or "", table.get("name") or ""]).lower()
+                score = sum(1 for w in qwords if w in hay)
+                if score:
+                    candidates.append({"table": table.get("name"), "measure": measure.get("name"), "score": score, "description": measure.get("description")})
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        chosen = candidates[:5]
+        draft_dax = None
+        if chosen:
+            measure = chosen[0]["measure"]
+            draft_dax = f'EVALUATE ROW("{measure}", [{measure}])'
+        else:
+            first_table = next((t for t in model.get("tables", []) if not t.get("is_hidden")), None)
+            if first_table:
+                draft_dax = f"EVALUATE TOPN({int(args.get('max_rows', 100))}, '{first_table['name']}')"
+        plan = {"question": question, "candidate_measures": chosen, "draft_dax": draft_dax,
+                "recommendation": "use_existing_measure" if chosen else "generate_exploratory_dax"}
+        rows = []
+        if args.get("execute") and draft_dax:
+            connector, workspace_id, dataset_id, err = await self._resolve_rest_dataset(args.get("workspace_name"), args.get("dataset_name"))
+            if err:
+                plan["execution_error"] = err
+            else:
+                rows = await asyncio.get_event_loop().run_in_executor(None, connector.execute_dax_query, workspace_id, dataset_id, draft_dax)
+        text = json.dumps({"plan": plan, "rows": rows}, indent=2, default=str)
+        return (text, {"plan": plan, "rows": rows})
 
     def _setup_handlers(self):
         """Set up MCP tool handlers"""
+
+        if not hasattr(self.server, "list_tools"):
+            async def list_tools_v2(ctx, params: PaginatedRequestParams | None = None):
+                tools = self._semantic_agent_tools() + [
+                    Tool(name="list_workspaces", description="List Power BI Service workspaces accessible to the service principal", inputSchema={"type": "object", "properties": {}, "required": []}),
+                    Tool(name="list_datasets", description="List datasets in a workspace", inputSchema={"type": "object", "properties": {"workspace_id": {"type": "string"}}, "required": ["workspace_id"]}),
+                    Tool(name="list_tables", description="List visible tables in a semantic model using REST Execute Queries", inputSchema={"type": "object", "properties": {"workspace_name": {"type": "string"}, "dataset_name": {"type": "string"}}, "required": ["workspace_name", "dataset_name"]}),
+                    Tool(name="list_columns", description="List columns for a table using REST Execute Queries", inputSchema={"type": "object", "properties": {"workspace_name": {"type": "string"}, "dataset_name": {"type": "string"}, "table_name": {"type": "string"}}, "required": ["workspace_name", "dataset_name", "table_name"]}),
+                    Tool(name="execute_dax", description="Execute a read-only DAX query through the Power BI REST Execute Queries API", inputSchema={"type": "object", "properties": {"workspace_name": {"type": "string"}, "dataset_name": {"type": "string"}, "dax_query": {"type": "string"}, "max_rows": {"type": "integer", "default": 100}}, "required": ["workspace_name", "dataset_name", "dax_query"]}),
+                    Tool(name="get_model_info", description="Summarize a semantic model through REST metadata", inputSchema={"type": "object", "properties": {"workspace_name": {"type": "string"}, "dataset_name": {"type": "string"}}, "required": ["workspace_name", "dataset_name"]}),
+                    Tool(name="security_status", description="Get security settings", inputSchema={"type": "object", "properties": {}, "required": []}),
+                    Tool(name="security_audit_log", description="Read recent audit log entries", inputSchema={"type": "object", "properties": {"count": {"type": "integer", "default": 10}}, "required": []}),
+                    Tool(name="validate_dax", description="Validate read-only DAX through REST Execute Queries", inputSchema={"type": "object", "properties": {"workspace_name": {"type": "string"}, "dataset_name": {"type": "string"}, "dax": {"type": "string"}, "as_measure": {"type": "boolean", "default": False}}, "required": ["workspace_name", "dataset_name", "dax"]}),
+                ]
+                for t in tools:
+                    annotations = self._tool_annotations.get(t.name)
+                    if annotations is not None:
+                        t.annotations = annotations
+                return ListToolsResult(tools=tools)
+
+            async def call_tool_v2(ctx, params: CallToolRequestParams):
+                name = params.name
+                args = params.arguments or {}
+                if name in self._REMOVED_TOOLS:
+                    return CallToolResult(content=[TextContent(type="text", text=f"Tool removed in REST-only read-only mode: {name}")], isError=True)
+                handler = self._tool_dispatch.get(name)
+                if handler is None:
+                    return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")], isError=True)
+                result = await handler(args)
+                if isinstance(result, tuple) and len(result) == 2:
+                    text, structured = result
+                    return CallToolResult(content=[TextContent(type="text", text=redact_secrets(text, [self.client_secret]))], structuredContent=structured)
+                return CallToolResult(content=[TextContent(type="text", text=redact_secrets(result, [self.client_secret]))])
+
+            async def list_resources_v2(ctx, params: PaginatedRequestParams | None = None):
+                return ListResourcesResult(resources=[
+                    Resource(uri="powerbi://reference/bpa-rules", name="bpa_rules", title="Best Practice Analyzer rules", description="Built-in BPA rule catalog", mimeType="application/json"),
+                    Resource(uri="powerbi://reference/refresh-errors", name="refresh_errors", title="Refresh error remediation map", description="Known refresh failure causes and fixes", mimeType="application/json"),
+                ])
+
+            async def list_resource_templates_v2(ctx, params: PaginatedRequestParams | None = None):
+                return ListResourceTemplatesResult(resourceTemplates=[
+                    ResourceTemplate(uriTemplate="powerbi://cloud/{workspace}/{dataset}/schema", name="cloud_schema", title="Cloud model schema", description="Semantic model schema through REST", mimeType="application/json"),
+                ])
+
+            async def read_resource_v2(ctx, params: ReadResourceRequestParams):
+                text = await self._read_resource(str(params.uri))
+                return ReadResourceResult(contents=[TextResourceContents(uri=params.uri, mimeType="application/json", text=text)])
+
+            async def list_prompts_v2(ctx, params: PaginatedRequestParams | None = None):
+                return ListPromptsResult(prompts=[Prompt(name=n, title=p.get("title", n), description=p["description"], arguments=p.get("arguments", [])) for n, p in self._prompts.items()])
+
+            async def get_prompt_v2(ctx, params: GetPromptRequestParams):
+                p = self._prompts.get(params.name)
+                if not p:
+                    raise ValueError(f"Unknown prompt: {params.name}")
+                text = p["render"](params.arguments or {})
+                return GetPromptResult(description=p["description"], messages=[PromptMessage(role="user", content=TextContent(type="text", text=text))])
+
+            async def complete_v2(ctx, params: CompleteRequestParams):
+                completion = await self._complete_argument(params.argument)
+                return CompleteResult(completion=completion)
+
+            self.server.add_request_handler("tools/list", PaginatedRequestParams, list_tools_v2)
+            self.server.add_request_handler("tools/call", CallToolRequestParams, call_tool_v2)
+            self.server.add_request_handler("resources/list", PaginatedRequestParams, list_resources_v2)
+            self.server.add_request_handler("resources/templates/list", PaginatedRequestParams, list_resource_templates_v2)
+            self.server.add_request_handler("resources/read", ReadResourceRequestParams, read_resource_v2)
+            self.server.add_request_handler("prompts/list", PaginatedRequestParams, list_prompts_v2)
+            self.server.add_request_handler("prompts/get", GetPromptRequestParams, get_prompt_v2)
+            self.server.add_request_handler("completion/complete", CompleteRequestParams, complete_v2)
+            return
 
         @self.server.list_tools()
         async def handle_list_tools() -> List[Tool]:
@@ -1104,7 +1321,7 @@ class PowerBIMCPServer:
                         "properties": {
                             "dax": {"type": "string", "description": "A full DAX query (EVALUATE/DEFINE...) or a scalar measure expression to validate"},
                             "as_measure": {"type": "boolean", "description": "Treat 'dax' as a scalar measure expression (wraps it in EVALUATE ROW for validation). Default false.", "default": False},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "description": "Validate against Desktop (local) or cloud. Default 'desktop'.", "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "description": "Cloud REST API only.", "default": "cloud"},
                             "workspace_name": {"type": "string", "description": "Cloud only: workspace name"},
                             "dataset_name": {"type": "string", "description": "Cloud only: dataset name"}
                         },
@@ -1128,7 +1345,7 @@ class PowerBIMCPServer:
                             "measure_name": {"type": "string", "description": "Name of the measure or column to analyze"},
                             "table_name": {"type": "string", "description": "Optional owning table to disambiguate a name used on multiple tables"},
                             "direction": {"type": "string", "enum": ["upstream", "downstream", "both"], "description": "upstream = dependencies; downstream = dependents. Default 'both'.", "default": "both"},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "description": "Desktop (local) or cloud. Default 'desktop'.", "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "description": "Cloud REST API only.", "default": "cloud"},
                             "workspace_name": {"type": "string", "description": "Cloud only: workspace name"},
                             "dataset_name": {"type": "string", "description": "Cloud only: dataset name"}
                         },
@@ -1157,7 +1374,7 @@ class PowerBIMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "categories": {"type": "array", "items": {"type": "string"}, "description": "Optional category filter, e.g. ['Performance','DAX','Naming','Formatting','Maintenance','Error Prevention']"},
                             "min_severity": {"type": "string", "enum": ["info", "warning", "error"], "default": "info", "description": "Only return findings at or above this severity"},
                             "workspace_name": {"type": "string"},
@@ -1179,7 +1396,7 @@ class PowerBIMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1201,7 +1418,7 @@ class PowerBIMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1215,7 +1432,7 @@ class PowerBIMCPServer:
                         "type": "object",
                         "properties": {
                             "dax": {"type": "string", "description": "The DAX query to time"},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1265,7 +1482,7 @@ class PowerBIMCPServer:
                             "expression": {"type": "string", "description": "A raw DAX expression to lint (takes precedence over the model)"},
                             "name": {"type": "string", "description": "Optional label for the expression in findings"},
                             "measure_name": {"type": "string", "description": "Lint just this measure from the connected model"},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "min_severity": {"type": "string", "enum": ["info", "warning", "error"], "default": "info"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
@@ -1289,7 +1506,7 @@ class PowerBIMCPServer:
                             "expression": {"type": "string", "description": "A raw DAX expression (takes precedence over the model)"},
                             "name": {"type": "string"},
                             "measure_name": {"type": "string", "description": "Suggest rewrites for this measure from the connected model"},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1343,7 +1560,7 @@ class PowerBIMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "scope": {"type": "array", "items": {"type": "string", "enum": ["tables", "columns", "measures"]}, "description": "Which object types to audit (default all)"},
                             "target_case": {"type": "string", "enum": ["title", "none"], "default": "title"},
                             "strip_warehouse_prefixes": {"type": "boolean", "default": True},
@@ -1502,7 +1719,7 @@ class PowerBIMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1523,7 +1740,7 @@ class PowerBIMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "max_samples": {"type": "integer", "default": 5, "description": "Sample orphan keys to list per violating relationship"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
@@ -1680,7 +1897,7 @@ class PowerBIMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "format": {"type": "string", "enum": ["markdown", "html"], "default": "markdown"},
                             "output_path": {"type": "string", "description": "Optional file path to write the dictionary to; if omitted, the content is returned"},
                             "workspace_name": {"type": "string"},
@@ -1697,7 +1914,7 @@ class PowerBIMCPServer:
                         "type": "object",
                         "properties": {
                             "output_path": {"type": "string", "description": "File path to write the JSON snapshot; if omitted, the JSON is returned"},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1712,7 +1929,7 @@ class PowerBIMCPServer:
                         "properties": {
                             "baseline_path": {"type": "string", "description": "Path to the baseline JSON snapshot (from model_snapshot)"},
                             "compare_path": {"type": "string", "description": "Optional path to a second snapshot to compare against; if omitted, compares against the live model"},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1727,7 +1944,7 @@ class PowerBIMCPServer:
                         "properties": {
                             "min_ai_score": {"type": "number", "description": "Minimum AI-readiness score to pass (default 60)", "default": 60},
                             "block_on_warnings": {"type": "boolean", "description": "Also fail on BPA warnings (default false)", "default": False},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1774,7 +1991,7 @@ class PowerBIMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1789,7 +2006,7 @@ class PowerBIMCPServer:
                         "properties": {
                             "object_name": {"type": "string", "description": "Measure or column name to analyze"},
                             "table_name": {"type": "string", "description": "Optional owning table to disambiguate"},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1821,7 +2038,7 @@ class PowerBIMCPServer:
                                           "name": {"type": "string"}, "dax": {"type": "string"},
                                           "expected": {}, "tolerance": {"type": "number"}}, "required": ["dax"]}},
                             "tests_path": {"type": "string", "description": "Path to a JSON file with the tests array (alternative to 'tests')"},
-                            "source": {"type": "string", "enum": ["desktop", "cloud"], "default": "desktop"},
+                            "source": {"type": "string", "enum": ["cloud"], "default": "cloud"},
                             "workspace_name": {"type": "string"},
                             "dataset_name": {"type": "string"}
                         },
@@ -1885,6 +2102,8 @@ class PowerBIMCPServer:
                     }
                 )
             ]
+            tools = [t for t in tools if t.name in self._REST_READONLY_TOOLS]
+            tools.extend(self._semantic_agent_tools())
             # Attach MCP safety/behavior hints from the annotations registry.
             for t in tools:
                 annotations = self._tool_annotations.get(t.name)
@@ -1906,10 +2125,15 @@ class PowerBIMCPServer:
                     )
 
                 handler = self._tool_dispatch.get(name)
+                if name in self._REMOVED_TOOLS:
+                    return [TextContent(type="text", text=(
+                        f"Tool removed in REST-only read-only mode: {name}. "
+                        "Use cloud REST read tools and semantic-model understanding tools instead."
+                    ))]
                 if handler is None:
                     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
-                if self._read_only and name in self._write_tools:
+                if name in self._write_tools:
                     # Return a structured payload too: tools that declare an outputSchema must
                     # produce structuredContent or the SDK rejects the (refusal) result.
                     return [TextContent(type="text", text=(
@@ -1942,22 +2166,6 @@ class PowerBIMCPServer:
         @self.server.list_resources()
         async def handle_list_resources():
             return [
-                Resource(uri="powerbi://desktop/schema", name="desktop_schema",
-                         title="Connected model schema",
-                         description="Tables, columns, measures and relationships of the connected Power BI Desktop model",
-                         mimeType="application/json"),
-                Resource(uri="powerbi://desktop/measures", name="desktop_measures",
-                         title="Model measures",
-                         description="All measures (with DAX expressions) in the connected Desktop model",
-                         mimeType="application/json"),
-                Resource(uri="powerbi://desktop/bpa", name="desktop_bpa",
-                         title="Best Practice Analyzer findings",
-                         description="BPA scan of the connected Desktop model",
-                         mimeType="application/json"),
-                Resource(uri="powerbi://desktop/ai-readiness", name="desktop_ai_readiness",
-                         title="AI-readiness report",
-                         description="AI-readiness score and metrics for the connected Desktop model",
-                         mimeType="application/json"),
                 Resource(uri="powerbi://reference/bpa-rules", name="bpa_rules",
                          title="Best Practice Analyzer rules",
                          description="The built-in BPA rule catalog (id, category, severity, name)",
@@ -2289,25 +2497,6 @@ class PowerBIMCPServer:
             )
         return self.rest_connector
 
-    def _get_xmla_connector(self, workspace_name: str, dataset_name: str) -> Optional[PowerBIXmlaConnector]:
-        """Get or create XMLA connector for a specific workspace/dataset"""
-        if not self.tenant_id or not self.client_id or not self.client_secret:
-            logger.warning("Cloud credentials not configured")
-            return None
-
-        cache_key = f"{workspace_name}:{dataset_name}"
-
-        if cache_key not in self.xmla_connector_cache:
-            connector = PowerBIXmlaConnector(
-                self.tenant_id, self.client_id, self.client_secret
-            )
-            if connector.connect(workspace_name, dataset_name):
-                self.xmla_connector_cache[cache_key] = connector
-            else:
-                return None
-
-        return self.xmla_connector_cache.get(cache_key)
-
     async def _handle_list_workspaces(self) -> str:
         """List Power BI Service workspaces"""
         try:
@@ -2364,6 +2553,22 @@ class PowerBIMCPServer:
             logger.error(f"List datasets error: {e}")
             return f"Error listing datasets: {str(e)}"
 
+
+    async def _resolve_rest_dataset(self, workspace_name: str, dataset_name: str):
+        connector = self._get_rest_connector()
+        if not connector:
+            return None, None, None, "Error: Cloud credentials not configured."
+        loop = asyncio.get_event_loop()
+        ws_id, ds_id, err = await loop.run_in_executor(None, connector.resolve_dataset, workspace_name, dataset_name)
+        return connector, ws_id, ds_id, err
+
+    @staticmethod
+    def _normalize_info_rows(rows):
+        normalized = []
+        for row in rows or []:
+            normalized.append({str(k).strip("[]"): v for k, v in row.items()})
+        return normalized
+
     async def _handle_list_tables(self, args: Dict[str, Any]) -> str:
         """List tables in a Cloud dataset"""
         try:
@@ -2373,20 +2578,18 @@ class PowerBIMCPServer:
             if not workspace_name or not dataset_name:
                 return "Error: workspace_name and dataset_name are required"
 
-            connector = await asyncio.get_event_loop().run_in_executor(
-                None, self._get_xmla_connector, workspace_name, dataset_name
+            connector, workspace_id, dataset_id, err = await self._resolve_rest_dataset(workspace_name, dataset_name)
+            if err:
+                return f"Error: {err}"
+            rows = await asyncio.get_event_loop().run_in_executor(
+                None, connector.execute_dax_query, workspace_id, dataset_id, "EVALUATE INFO.VIEW.TABLES()"
             )
-
-            if not connector:
-                return f"Error: Could not connect to dataset '{dataset_name}'"
-
-            tables = await asyncio.get_event_loop().run_in_executor(
-                None, connector.discover_tables
-            )
+            tables = self._normalize_info_rows(rows)
 
             result = f"Tables in '{dataset_name}' ({len(tables)}):\n\n"
             for table in tables:
-                result += f"  - {table['name']}\n"
+                if not table.get("IsHidden", False):
+                    result += f"  - {table.get('Name', 'Unknown')}\n"
 
             return result
 
@@ -2404,21 +2607,17 @@ class PowerBIMCPServer:
             if not all([workspace_name, dataset_name, table_name]):
                 return "Error: workspace_name, dataset_name, and table_name are required"
 
-            connector = await asyncio.get_event_loop().run_in_executor(
-                None, self._get_xmla_connector, workspace_name, dataset_name
+            connector, workspace_id, dataset_id, err = await self._resolve_rest_dataset(workspace_name, dataset_name)
+            if err:
+                return f"Error: {err}"
+            query = f'EVALUATE FILTER(INFO.VIEW.COLUMNS(), [Table] = "{str(table_name).replace(chr(34), chr(34)+chr(34))}")'
+            rows = await asyncio.get_event_loop().run_in_executor(
+                None, connector.execute_dax_query, workspace_id, dataset_id, query
             )
-
-            if not connector:
-                return f"Error: Could not connect to dataset '{dataset_name}'"
-
-            schema = await asyncio.get_event_loop().run_in_executor(
-                None, connector.get_table_schema, table_name
-            )
-
-            columns = schema.get("columns", [])
+            columns = self._normalize_info_rows(rows)
             result = f"Columns in '{table_name}' ({len(columns)}):\n\n"
             for col in columns:
-                result += f"  - {col['name']} ({col.get('type', 'Unknown')})\n"
+                result += f"  - {col.get('Name', 'Unknown')} ({col.get('DataType', 'Unknown')})\n"
 
             return result
 
@@ -2456,17 +2655,14 @@ class PowerBIMCPServer:
             max_rows = min(requested, cap) if requested else cap
             max_rows = min(max_rows, 100000)
 
-            connector = await asyncio.get_event_loop().run_in_executor(
-                None, self._get_xmla_connector, workspace_name, dataset_name
-            )
+            connector, workspace_id, dataset_id, err = await self._resolve_rest_dataset(workspace_name, dataset_name)
+            if err:
+                return f"Error: {err}"
 
-            if not connector:
-                return f"Error: Could not connect to dataset '{dataset_name}'"
-
-            # Execute query with timing
+            # Execute query with timing via REST Execute Queries API
             start_time = time.time()
             rows = await asyncio.get_event_loop().run_in_executor(
-                None, connector.execute_dax, dax_query
+                None, connector.execute_dax_query, workspace_id, dataset_id, dax_query
             )
             duration_ms = (time.time() - start_time) * 1000
 
@@ -2518,71 +2714,20 @@ class PowerBIMCPServer:
             return f"Error executing DAX: {safe}"
 
     async def _handle_get_model_info(self, args: Dict[str, Any]) -> str:
-        """Get model info from Cloud dataset using INFO.VIEW functions"""
-        try:
-            workspace_name = args.get("workspace_name")
-            dataset_name = args.get("dataset_name")
-
-            if not workspace_name or not dataset_name:
-                return "Error: workspace_name and dataset_name are required"
-
-            connector = await asyncio.get_event_loop().run_in_executor(
-                None, self._get_xmla_connector, workspace_name, dataset_name
-            )
-
-            if not connector:
-                return f"Error: Could not connect to dataset '{dataset_name}'"
-
-            result = f"=== Semantic Model Info: {dataset_name} ===\n\n"
-
-            # INFO.VIEW.TABLES
-            try:
-                tables = await asyncio.get_event_loop().run_in_executor(
-                    None, connector.execute_dax, "EVALUATE INFO.VIEW.TABLES()"
-                )
-                result += f"--- TABLES ({len(tables)}) ---\n"
-                for t in tables:
-                    name = t.get("[Name]", t.get("Name", "Unknown"))
-                    if not t.get("[IsHidden]", t.get("IsHidden", False)):
-                        result += f"  - {name}\n"
-                result += "\n"
-            except Exception as e:
-                result += f"--- TABLES ---\nError: {e}\n\n"
-
-            # INFO.VIEW.MEASURES
-            try:
-                measures = await asyncio.get_event_loop().run_in_executor(
-                    None, connector.execute_dax, "EVALUATE INFO.VIEW.MEASURES()"
-                )
-                result += f"--- MEASURES ({len(measures)}) ---\n"
-                for m in measures:
-                    name = m.get("[Name]", m.get("Name", "Unknown"))
-                    result += f"  - {name}\n"
-                result += "\n"
-            except Exception as e:
-                result += f"--- MEASURES ---\nError: {e}\n\n"
-
-            # INFO.VIEW.RELATIONSHIPS
-            try:
-                rels = await asyncio.get_event_loop().run_in_executor(
-                    None, connector.execute_dax, "EVALUATE INFO.VIEW.RELATIONSHIPS()"
-                )
-                result += f"--- RELATIONSHIPS ({len(rels)}) ---\n"
-                for r in rels:
-                    from_t = r.get("[FromTableName]", r.get("FromTableName", ""))
-                    from_c = r.get("[FromColumnName]", r.get("FromColumnName", ""))
-                    to_t = r.get("[ToTableName]", r.get("ToTableName", ""))
-                    to_c = r.get("[ToColumnName]", r.get("ToColumnName", ""))
-                    result += f"  - {from_t}[{from_c}] -> {to_t}[{to_c}]\n"
-                result += "\n"
-            except Exception as e:
-                result += f"--- RELATIONSHIPS ---\nError: {e}\n\n"
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Get model info error: {e}")
-            return f"Error getting model info: {str(e)}"
+        """Get model info from a Power BI semantic model through REST only."""
+        text, structured = await self._handle_describe_semantic_model(args)
+        if structured.get("error"):
+            return text
+        model = structured["model"]
+        result = f"=== Semantic Model Info: {args.get('dataset_name')} ===\n\n"
+        for table in model.get("tables", []):
+            if table.get("is_hidden"):
+                continue
+            result += f"- {table['name']}: {len(table.get('columns', []))} columns, {len(table.get('measures', []))} measures\n"
+            for measure in table.get("measures", [])[:10]:
+                result += f"  measure: [{measure.get('name')}]\n"
+        result += f"\nRelationships: {len(model.get('relationships', []))}\n"
+        return result
 
     # ==================== SECURITY HANDLERS ====================
 
@@ -3257,26 +3402,18 @@ class PowerBIMCPServer:
         probe = build_validation_probe(dax or "", bool(args.get("as_measure", False)))
         if not dax:
             return ("Error: dax is required", {"valid": False, "error": "dax is required", "probe": probe})
-        source = (args.get("source") or "desktop").lower()
+        source = "cloud"
         loop = asyncio.get_event_loop()
         try:
-            if source == "cloud":
-                workspace = args.get("workspace_name")
-                dataset = args.get("dataset_name")
-                if not (workspace and dataset):
-                    msg = "Error: workspace_name and dataset_name are required for cloud validation"
-                    return (msg, {"valid": False, "error": msg, "probe": probe})
-                connector = await loop.run_in_executor(None, self._get_xmla_connector, workspace, dataset)
-                if not connector:
-                    msg = f"Error: could not connect to dataset '{dataset}'"
-                    return (msg, {"valid": False, "error": msg, "probe": probe})
-                await loop.run_in_executor(None, connector.execute_dax, probe)
-            else:
-                desktop = self._get_desktop_connector()
-                if not desktop.current_port:
-                    msg = "Not connected to Power BI Desktop. Use 'desktop_connect' first."
-                    return (msg, {"valid": False, "error": msg, "probe": probe})
-                await loop.run_in_executor(None, desktop.execute_dax, probe, 1)
+            workspace = args.get("workspace_name")
+            dataset = args.get("dataset_name")
+            if not (workspace and dataset):
+                msg = "Error: workspace_name and dataset_name are required for REST validation"
+                return (msg, {"valid": False, "error": msg, "probe": probe})
+            connector, workspace_id, dataset_id, err = await self._resolve_rest_dataset(workspace, dataset)
+            if err:
+                return (f"Error: {err}", {"valid": False, "error": err, "probe": probe})
+            await loop.run_in_executor(None, connector.execute_dax_query, workspace_id, dataset_id, probe)
             return (
                 f"[VALID] DAX validated successfully against the model.\n\nProbe executed:\n{probe}",
                 {"valid": True, "error": None, "probe": probe},
@@ -3304,7 +3441,7 @@ class PowerBIMCPServer:
             if not name:
                 return "Error: measure_name is required"
             direction = (args.get("direction") or "both").lower()
-            source = (args.get("source") or "desktop").lower()
+            source = "cloud"
             esc = str(name).replace('"', '""')
             table = args.get("table_name")
             etbl = str(table).replace('"', '""') if table else None
@@ -3409,18 +3546,12 @@ class PowerBIMCPServer:
 
         run(query_str) -> list[dict]. Used by analysis tools that issue INFO/DMV/DAX queries.
         """
-        loop = asyncio.get_event_loop()
-        if (source or "desktop").lower() == "cloud":
-            if not (workspace and dataset):
-                return None, "workspace_name and dataset_name are required for cloud"
-            connector = await loop.run_in_executor(None, self._get_xmla_connector, workspace, dataset)
-            if not connector:
-                return None, f"could not connect to dataset '{dataset}'"
-            return (lambda q: connector.execute_dax(q)), None
-        desktop = self._get_desktop_connector()
-        if not desktop.current_port:
-            return None, "Not connected to Power BI Desktop. Use 'desktop_connect' first."
-        return (lambda q: desktop.execute_dax(q, 100000)), None
+        if not (workspace and dataset):
+            return None, "workspace_name and dataset_name are required"
+        connector, workspace_id, dataset_id, err = await self._resolve_rest_dataset(workspace, dataset)
+        if err:
+            return None, err
+        return (lambda q: connector.execute_dax_query(workspace_id, dataset_id, q)), None
 
     async def _gather_model_metadata(self, source: str, workspace=None, dataset=None):
         """Build a normalized model dict (for BPA / AI-readiness) via INFO.VIEW.* DAX.
@@ -3491,7 +3622,7 @@ class PowerBIMCPServer:
         """Run the Best Practice Analyzer over the connected model. Returns (text, result)."""
         try:
             model, err = await self._gather_model_metadata(
-                args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name")
+                "cloud", args.get("workspace_name"), args.get("dataset_name")
             )
             if err:
                 return (f"Error: {err}", {"error": err, "summary": {"total": 0}, "findings": []})
@@ -3525,7 +3656,7 @@ class PowerBIMCPServer:
         """Score how AI-ready (Copilot/agent-ready) the connected model is. Returns (text, result)."""
         try:
             model, err = await self._gather_model_metadata(
-                args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name")
+                "cloud", args.get("workspace_name"), args.get("dataset_name")
             )
             if err:
                 return (f"Error: {err}", {"error": err, "score": 0})
@@ -3566,7 +3697,7 @@ class PowerBIMCPServer:
                 measures = [{"name": args.get("name") or "(expression)", "expression": expr}]
             else:
                 model, err = await self._gather_model_metadata(
-                    args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name"))
+                    "cloud", args.get("workspace_name"), args.get("dataset_name"))
                 if err:
                     return (f"Error: {err}", {"error": err, "summary": {"total": 0}, "findings": []})
                 measures = self._measures_from_model(model, args.get("measure_name"))
@@ -3606,7 +3737,7 @@ class PowerBIMCPServer:
                 rewrites = dax_lint.suggest_rewrites(args.get("name") or "(expression)", expr)
             else:
                 model, err = await self._gather_model_metadata(
-                    args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name"))
+                    "cloud", args.get("workspace_name"), args.get("dataset_name"))
                 if err:
                     return (f"Error: {err}", {"error": err, "rewrites": []})
                 for m in self._measures_from_model(model, args.get("measure_name")):
@@ -3655,7 +3786,7 @@ class PowerBIMCPServer:
         """Audit naming conventions and return a rename plan. Returns (text, result)."""
         try:
             model, err = await self._gather_model_metadata(
-                args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name"))
+                "cloud", args.get("workspace_name"), args.get("dataset_name"))
             if err:
                 return (f"Error: {err}", {"error": err, "summary": {"total_suggestions": 0}, "plan": []})
             options = {k: args[k] for k in ("scope", "target_case", "strip_warehouse_prefixes", "expand_abbreviations")
@@ -3954,7 +4085,7 @@ class PowerBIMCPServer:
         """Dimensional-model audit. Returns (text, result)."""
         try:
             model, err = await self._gather_model_metadata(
-                args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name"))
+                "cloud", args.get("workspace_name"), args.get("dataset_name"))
             if err:
                 return (f"Error: {err}", {"error": err, "findings": [], "summary": {}})
             result = star_schema.audit_star_schema(model)
@@ -3986,7 +4117,7 @@ class PowerBIMCPServer:
     async def _handle_scan_referential_integrity(self, args: Dict[str, Any]):
         """Orphan-key scan across active relationships. Returns (text, result)."""
         try:
-            source = args.get("source") or "desktop"
+            source = "cloud"
             model, err = await self._gather_model_metadata(source, args.get("workspace_name"), args.get("dataset_name"))
             if err:
                 return (f"Error: {err}", {"error": err, "checked": 0, "violations": []})
@@ -4307,7 +4438,7 @@ class PowerBIMCPServer:
         """VertiPaq-style storage analysis: per-table row counts (reliable via DAX) plus
         best-effort sizes, to find the biggest/most expensive tables."""
         try:
-            source = args.get("source") or "desktop"
+            source = "cloud"
             run, err = await self._get_query_runner(source, args.get("workspace_name"), args.get("dataset_name"))
             if err:
                 return f"Error: {err}"
@@ -4371,7 +4502,7 @@ class PowerBIMCPServer:
             dax = args.get("dax")
             if not dax:
                 return "Error: dax is required"
-            source = args.get("source") or "desktop"
+            source = "cloud"
             run, err = await self._get_query_runner(source, args.get("workspace_name"), args.get("dataset_name"))
             if err:
                 return f"Error: {err}"
@@ -4407,7 +4538,7 @@ class PowerBIMCPServer:
     async def _handle_export_data_dictionary(self, args: Dict[str, Any]) -> str:
         """Generate a portable data dictionary (Markdown/HTML) with a documentation-coverage score."""
         try:
-            source = args.get("source") or "desktop"
+            source = "cloud"
             model, err = await self._gather_model_metadata(
                 source, args.get("workspace_name"), args.get("dataset_name")
             )
@@ -4439,7 +4570,7 @@ class PowerBIMCPServer:
         """Capture the connected model's metadata to a JSON snapshot (for later model_diff)."""
         try:
             model, err = await self._gather_model_metadata(
-                args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name")
+                "cloud", args.get("workspace_name"), args.get("dataset_name")
             )
             if err:
                 return f"Error: {err}"
@@ -4475,7 +4606,7 @@ class PowerBIMCPServer:
                     return f"Error reading compare snapshot: {e}"
             else:
                 after, err = await self._gather_model_metadata(
-                    args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name")
+                    "cloud", args.get("workspace_name"), args.get("dataset_name")
                 )
                 if err:
                     return f"Error reading live model to compare: {err}"
@@ -4488,7 +4619,7 @@ class PowerBIMCPServer:
         """CI quality gate: run BPA + AI-readiness and return a machine PASS/FAIL verdict."""
         try:
             model, err = await self._gather_model_metadata(
-                args.get("source") or "desktop", args.get("workspace_name"), args.get("dataset_name")
+                "cloud", args.get("workspace_name"), args.get("dataset_name")
             )
             if err:
                 return (f"Error: {err}", {"passed": False, "error": err})
@@ -4592,7 +4723,7 @@ class PowerBIMCPServer:
     async def _handle_find_unused_objects(self, args: Dict[str, Any]) -> str:
         """Find columns/measures not referenced by any other model object nor any report visual."""
         try:
-            source = args.get("source") or "desktop"
+            source = "cloud"
             model, err = await self._gather_model_metadata(source, args.get("workspace_name"), args.get("dataset_name"))
             if err:
                 return f"Error: {err}"
@@ -4656,7 +4787,7 @@ class PowerBIMCPServer:
             if not name:
                 return "Error: object_name is required (a measure or column name)"
             table = args.get("table_name")
-            source = args.get("source") or "desktop"
+            source = "cloud"
             run, rerr = await self._get_query_runner(source, args.get("workspace_name"), args.get("dataset_name"))
             if rerr:
                 return f"Error: {rerr}"
@@ -4775,7 +4906,7 @@ class PowerBIMCPServer:
             if not tests or not isinstance(tests, list):
                 return ("Error: provide 'tests' (array of {name, dax, expected, tolerance?}) or 'tests_path'.",
                         {"passed": 0, "total": 0})
-            run, rerr = await self._get_query_runner(args.get("source") or "desktop",
+            run, rerr = await self._get_query_runner("cloud",
                                                      args.get("workspace_name"), args.get("dataset_name"))
             if rerr:
                 return (f"Error: {rerr}", {"passed": 0, "total": len(tests), "error": rerr})
@@ -5598,22 +5729,38 @@ class PowerBIMCPServer:
             return f"Error validating report bindings: {redact_secrets(str(e), [self.client_secret])}"
 
     async def run(self):
-        """Run the MCP server"""
-        async with stdio_server() as (read_stream, write_stream):
-            logger.info("Power BI MCP Server V2 starting...")
-            logger.info("Supports: Power BI Desktop (local) + Power BI Service (cloud)")
-            await self.server.run(
-                read_stream,
-                write_stream,
-                InitializationOptions(
-                    server_name="powerbi-mcp-v2",
-                    server_version="2.0.0",
-                    capabilities=self.server.get_capabilities(
-                        notification_options=NotificationOptions(),
-                        experimental_capabilities={}
+        """Run the MCP server over HTTP/SSE."""
+        host = os.getenv("POWERBI_MCP_HOST", "0.0.0.0")
+        port = int(os.getenv("POWERBI_MCP_PORT", "8000"))
+        sse_path = os.getenv("POWERBI_MCP_SSE_PATH", "/sse")
+        messages_path = os.getenv("POWERBI_MCP_MESSAGES_PATH", "/messages/")
+        transport = SseServerTransport(messages_path)
+
+        async def handle_sse(request: Request):
+            async with transport.connect_sse(request.scope, request.receive, request._send) as streams:
+                await self.server.run(
+                    streams[0], streams[1],
+                    InitializationOptions(
+                        server_name="powerbi-mcp-rest-readonly",
+                        server_version="3.0.0",
+                        capabilities=self.server.get_capabilities(
+                            notification_options=NotificationOptions(),
+                            experimental_capabilities={}
+                        )
                     )
                 )
-            )
+
+        async def health(request: Request):
+            return JSONResponse({"status": "ok", "transport": "sse", "mode": "rest-readonly"})
+
+        app = Starlette(routes=[
+            Route("/health", endpoint=health, methods=["GET"]),
+            Route(sse_path, endpoint=handle_sse, methods=["GET"]),
+            Mount(messages_path, app=transport.handle_post_message),
+        ])
+        logger.info("Power BI MCP REST read-only server starting on http://%s:%s%s", host, port, sse_path)
+        config = uvicorn.Config(app, host=host, port=port, log_level=os.getenv("LOG_LEVEL", "info").lower())
+        await uvicorn.Server(config).serve()
 
 
 def main():

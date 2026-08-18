@@ -5,19 +5,15 @@
 
 # MCP SDK. >=1.9.0 is required for tool outputSchema + structuredContent (and ToolAnnotations);
 # the server is developed and tested against 1.27.0.
-mcp>=1.9.0
+mcp>=2.0.0
+starlette>=0.27.0
+uvicorn>=0.23.0
 
 # Power BI Cloud connectivity
 msal>=1.24.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 
-# Power BI Desktop connectivity
-psutil>=5.9.0
-
-# XMLA connectivity (requires ADOMD.NET on Windows)
-pythonnet>=3.0.0
-pyadomd>=0.1.0
 
 # Security features
 pyyaml>=6.0.0
