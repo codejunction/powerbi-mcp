@@ -803,6 +803,8 @@ source = { virtual = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "msal" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -812,6 +814,8 @@ dependencies = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=0.11.0" },
     { name = "msal", specifier = ">=1.24.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "requests", specifier = ">=2.31.0" },
