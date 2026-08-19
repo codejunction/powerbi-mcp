@@ -6,6 +6,9 @@ import logging
 from typing import Any, Dict, List, Optional
 import requests
 import msal
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,26 @@ class PowerBIRestConnector:
         self.client_id = client_id
         self.client_secret = client_secret
         self.access_token = None
+        self.session = requests.Session()
+        self.session.verify = False
+
+    def close(self):
+        """Close the requests session"""
+        if self.session:
+            self.session.close()
+
+    def __del__(self):
+        """Cleanup when object is destroyed"""
+        self.close()
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        self.close()
+        return False
 
     def authenticate(self) -> bool:
         """Authenticate using Service Principal and get access token"""
@@ -66,7 +89,7 @@ class PowerBIRestConnector:
                     return []
 
             url = f"{self.BASE_URL}/groups"
-            response = requests.get(url, headers=self._get_headers(), timeout=30)
+            response = self.session.get(url, headers=self._get_headers(), timeout=30)
             response.raise_for_status()
 
             workspaces = response.json().get("value", [])
@@ -96,7 +119,7 @@ class PowerBIRestConnector:
                     return []
 
             url = f"{self.BASE_URL}/groups/{workspace_id}/datasets"
-            response = requests.get(url, headers=self._get_headers(), timeout=30)
+            response = self.session.get(url, headers=self._get_headers(), timeout=30)
             response.raise_for_status()
 
             datasets = response.json().get("value", [])
@@ -122,7 +145,7 @@ class PowerBIRestConnector:
         if not self.access_token and not self.authenticate():
             return {}
         url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}"
-        response = requests.get(url, headers=self._get_headers(), timeout=30)
+        response = self.session.get(url, headers=self._get_headers(), timeout=30)
         response.raise_for_status()
         return response.json()
 
@@ -135,7 +158,7 @@ class PowerBIRestConnector:
             "queries": [{"query": dax_query}],
             "serializerSettings": {"includeNulls": True},
         }
-        response = requests.post(url, headers=self._get_headers(), json=payload, timeout=60)
+        response = self.session.post(url, headers=self._get_headers(), json=payload, timeout=60)
         response.raise_for_status()
         data = response.json()
         results = data.get("results") or []
@@ -189,7 +212,7 @@ class PowerBIRestConnector:
         if not self.access_token and not self.authenticate():
             return []
         url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes?$top={int(top)}"
-        response = requests.get(url, headers=self._get_headers(), timeout=30)
+        response = self.session.get(url, headers=self._get_headers(), timeout=30)
         response.raise_for_status()
         return response.json().get("value", [])
 
@@ -198,7 +221,7 @@ class PowerBIRestConnector:
         if not self.access_token and not self.authenticate():
             return []
         url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/datasources"
-        response = requests.get(url, headers=self._get_headers(), timeout=30)
+        response = self.session.get(url, headers=self._get_headers(), timeout=30)
         response.raise_for_status()
         return response.json().get("value", [])
 
@@ -215,7 +238,7 @@ class PowerBIRestConnector:
         url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
         payload = body if body else {"notifyOption": "NoNotification"}
         try:
-            response = requests.post(url, headers=self._get_headers(), json=payload, timeout=30)
+            response = self.session.post(url, headers=self._get_headers(), json=payload, timeout=30)
             accepted = response.status_code in (200, 202)  # async contract is 202 Accepted
             location = response.headers.get("Location")
             return {
@@ -237,7 +260,7 @@ class PowerBIRestConnector:
         if not self.access_token and not self.authenticate():
             return []
         url = f"{self.BASE_URL}/admin/groups?$top={int(top)}"
-        response = requests.get(url, headers=self._get_headers(), timeout=30)
+        response = self.session.get(url, headers=self._get_headers(), timeout=30)
         response.raise_for_status()
         return response.json().get("value", [])
 
@@ -251,8 +274,8 @@ class PowerBIRestConnector:
         url = (f"{self.BASE_URL}/admin/workspaces/getInfo"
                f"?lineage={'true' if lineage else 'false'}&datasourceDetails=false"
                f"&datasetSchema=false&datasetExpressions=false&getArtifactUsers=false")
-        response = requests.post(url, headers=self._get_headers(),
-                                 json={"workspaces": workspace_ids[:100]}, timeout=30)
+        response = self.session.post(url, headers=self._get_headers(),
+                                     json={"workspaces": workspace_ids[:100]}, timeout=30)
         response.raise_for_status()
         return response.json()
 
@@ -263,7 +286,7 @@ class PowerBIRestConnector:
         if not self.access_token and not self.authenticate():
             return {}
         url = f"{self.BASE_URL}/admin/workspaces/scanStatus/{scan_id}"
-        response = requests.get(url, headers=self._get_headers(), timeout=30)
+        response = self.session.get(url, headers=self._get_headers(), timeout=30)
         response.raise_for_status()
         return response.json()
 
@@ -272,7 +295,7 @@ class PowerBIRestConnector:
         if not self.access_token and not self.authenticate():
             return {}
         url = f"{self.BASE_URL}/admin/workspaces/scanResult/{scan_id}"
-        response = requests.get(url, headers=self._get_headers(), timeout=60)
+        response = self.session.get(url, headers=self._get_headers(), timeout=60)
         response.raise_for_status()
         return response.json()
 
@@ -292,7 +315,7 @@ class PowerBIRestConnector:
             url += f"&$filter={quote(filter_expr)}"
         entities: List[Dict[str, Any]] = []
         for _ in range(1000):  # safety bound on pages
-            response = requests.get(url, headers=self._get_headers(), timeout=30)
+            response = self.session.get(url, headers=self._get_headers(), timeout=30)
             if response.status_code == 429:
                 _time.sleep(int(response.headers.get("Retry-After", "10")))
                 continue
