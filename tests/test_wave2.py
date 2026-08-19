@@ -3,6 +3,7 @@ Wave 2 tests (offline-verifiable parts): PBIR reference scanner, refresh_doctor
 classification, find_unused_objects, impact_analysis. Live model/cloud paths are
 mocked. Run: python test_wave2.py
 """
+
 import asyncio
 import json
 import os
@@ -10,15 +11,20 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+)
 import server  # noqa: E402
-from powerbi_pbip_connector import PowerBIPBIPConnector, PBIPProject  # noqa: E402
+from powerbi_pbip_connector import PBIPProject, PowerBIPBIPConnector  # noqa: E402
 
 _failures = []
 
 
 def check(name, cond, detail=""):
-    print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail and not cond else ""))
+    print(
+        f"  [{'PASS' if cond else 'FAIL'}] {name}"
+        + (f": {detail}" if detail and not cond else "")
+    )
     if not cond:
         _failures.append(name)
 
@@ -34,8 +40,22 @@ VISUAL_JSON = {
             "queryState": {
                 "Values": {
                     "projections": [
-                        {"field": {"Column": {"Expression": {"SourceRef": {"Entity": "Sales"}}, "Property": "Amount"}}},
-                        {"field": {"Measure": {"Expression": {"SourceRef": {"Entity": "Sales"}}, "Property": "Total"}}},
+                        {
+                            "field": {
+                                "Column": {
+                                    "Expression": {"SourceRef": {"Entity": "Sales"}},
+                                    "Property": "Amount",
+                                }
+                            }
+                        },
+                        {
+                            "field": {
+                                "Measure": {
+                                    "Expression": {"SourceRef": {"Entity": "Sales"}},
+                                    "Property": "Total",
+                                }
+                            }
+                        },
                     ]
                 }
             }
@@ -50,9 +70,14 @@ def make_pbip_with_report(tmp):
     vpath = root / "visual.json"
     vpath.write_text(json.dumps(VISUAL_JSON), encoding="utf-8")
     proj = PBIPProject(
-        root_path=root, pbip_file=root / "p.pbip", semantic_model_folder=None,
-        report_folder=root, report_json_path=None, tmdl_files=[],
-        is_pbir_enhanced=True, visual_json_files=[vpath],
+        root_path=root,
+        pbip_file=root / "p.pbip",
+        semantic_model_folder=None,
+        report_folder=root,
+        report_json_path=None,
+        tmdl_files=[],
+        is_pbir_enhanced=True,
+        visual_json_files=[vpath],
     )
     c = PowerBIPBIPConnector(auto_backup=False)
     c.current_project = proj
@@ -67,34 +92,79 @@ def test_pbir_scanner():
         check("finds Sales[Amount]", ("Sales", "Amount") in refs, str(refs))
         check("finds Sales[Total]", ("Sales", "Total") in refs, str(refs))
         byfile = c.collect_report_references_by_file()
-        check("by-file has one file", len(byfile) == 1 and any(("Sales", "Total") in s for s in byfile.values()))
+        check(
+            "by-file has one file",
+            len(byfile) == 1 and any(("Sales", "Total") in s for s in byfile.values()),
+        )
 
 
 def test_pbir_scanner_advanced():
     print("\n== PBIR scanner: hierarchy, From/Source alias, two-table arithmetic ==")
     refs = set()
     # HierarchyLevel on an axis (date hierarchy) - both hierarchy + level captured
-    hier = {"HierarchyLevel": {"Expression": {"Hierarchy": {
-        "Expression": {"SourceRef": {"Entity": "DateDim"}}, "Hierarchy": "Calendar"}}, "Level": "Month"}}
+    hier = {
+        "HierarchyLevel": {
+            "Expression": {
+                "Hierarchy": {
+                    "Expression": {"SourceRef": {"Entity": "DateDim"}},
+                    "Hierarchy": "Calendar",
+                }
+            },
+            "Level": "Month",
+        }
+    }
     PowerBIPBIPConnector._walk_report_refs(hier, refs)
     check("hierarchy captured", ("DateDim", "Calendar") in refs, str(refs))
     check("level captured", ("DateDim", "Month") in refs, str(refs))
 
     # Filter with From-clause alias resolution (SourceRef.Source -> Entity)
     refs2 = set()
-    flt = {"From": [{"Name": "s", "Entity": "Sales", "Type": 0}],
-           "Where": [{"Condition": {"In": {"Expressions": [
-               {"Column": {"Expression": {"SourceRef": {"Source": "s"}}, "Property": "Region"}}]}}}]}
+    flt = {
+        "From": [{"Name": "s", "Entity": "Sales", "Type": 0}],
+        "Where": [
+            {
+                "Condition": {
+                    "In": {
+                        "Expressions": [
+                            {
+                                "Column": {
+                                    "Expression": {"SourceRef": {"Source": "s"}},
+                                    "Property": "Region",
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        ],
+    }
     PowerBIPBIPConnector._walk_report_refs(flt, refs2)
     check("From/Source alias resolved", ("Sales", "Region") in refs2, str(refs2))
 
     # Two-table arithmetic: each column attributed to its OWN table
     refs3 = set()
-    arith = {"Arithmetic": {
-        "Left": {"Column": {"Expression": {"SourceRef": {"Entity": "A"}}, "Property": "x"}},
-        "Right": {"Column": {"Expression": {"SourceRef": {"Entity": "B"}}, "Property": "y"}}}}
+    arith = {
+        "Arithmetic": {
+            "Left": {
+                "Column": {
+                    "Expression": {"SourceRef": {"Entity": "A"}},
+                    "Property": "x",
+                }
+            },
+            "Right": {
+                "Column": {
+                    "Expression": {"SourceRef": {"Entity": "B"}},
+                    "Property": "y",
+                }
+            },
+        }
+    }
     PowerBIPBIPConnector._walk_report_refs(arith, refs3)
-    check("two-table arithmetic correctly attributed", {("A", "x"), ("B", "y")} <= refs3, str(refs3))
+    check(
+        "two-table arithmetic correctly attributed",
+        {("A", "x"), ("B", "y")} <= refs3,
+        str(refs3),
+    )
 
 
 class FakeRest:
@@ -103,24 +173,52 @@ class FakeRest:
 
     def get_refresh_history(self, wid, did, top=10):
         return [
-            {"status": "Failed", "refreshType": "Scheduled", "endTime": "2026-06-21T01:00:00Z",
-             "serviceExceptionJson": '{"errorCode":"0xC11C0020","errorDescription":"model evicted, out of memory"}'},
-            {"status": "Failed", "refreshType": "Scheduled", "endTime": "2026-06-20T01:00:00Z",
-             "serviceExceptionJson": '{"errorCode":"0xC11C0020"}'},
-            {"status": "Failed", "refreshType": "Scheduled", "endTime": "2026-06-19T01:00:00Z",
-             "serviceExceptionJson": '{"errorCode":"0xC11C0020"}'},
-            {"status": "Completed", "refreshType": "Scheduled", "endTime": "2026-06-18T01:00:00Z"},
+            {
+                "status": "Failed",
+                "refreshType": "Scheduled",
+                "endTime": "2026-06-21T01:00:00Z",
+                "serviceExceptionJson": '{"errorCode":"0xC11C0020","errorDescription":"model evicted, out of memory"}',
+            },
+            {
+                "status": "Failed",
+                "refreshType": "Scheduled",
+                "endTime": "2026-06-20T01:00:00Z",
+                "serviceExceptionJson": '{"errorCode":"0xC11C0020"}',
+            },
+            {
+                "status": "Failed",
+                "refreshType": "Scheduled",
+                "endTime": "2026-06-19T01:00:00Z",
+                "serviceExceptionJson": '{"errorCode":"0xC11C0020"}',
+            },
+            {
+                "status": "Completed",
+                "refreshType": "Scheduled",
+                "endTime": "2026-06-18T01:00:00Z",
+            },
         ]
 
 
 def test_refresh_doctor():
     print("\n== refresh_doctor (mock REST) ==")
     srv = server.PowerBIMCPServer()
-    srv.tenant_id = srv.client_id = srv.client_secret = "x"  # make _get_rest_connector return ours
+    srv.tenant_id = srv.client_id = srv.client_secret = (
+        "x"  # make _get_rest_connector return ours
+    )
     srv.rest_connector = FakeRest()
-    text, structured = run(srv._handle_refresh_doctor({"workspace_name": "WS", "dataset_name": "DS"}))
-    check("classifies eviction", structured.get("diagnosis", {}).get("id") == "model_eviction", str(structured))
-    check("counts 3 consecutive failures", structured.get("consecutive_failures") == 3, str(structured))
+    text, structured = run(
+        srv._handle_refresh_doctor({"workspace_name": "WS", "dataset_name": "DS"})
+    )
+    check(
+        "classifies eviction",
+        structured.get("diagnosis", {}).get("id") == "model_eviction",
+        str(structured),
+    )
+    check(
+        "counts 3 consecutive failures",
+        structured.get("consecutive_failures") == 3,
+        str(structured),
+    )
     check("warns about auto-disable", "auto-disable" in text, text)
 
 
@@ -132,18 +230,34 @@ class FakeDesktop:
         if "INFO.VIEW.TABLES" in u:
             return [{"[Name]": "Sales", "[IsHidden]": False}]
         if "INFO.VIEW.COLUMNS" in u:
-            return [{"[Name]": "Amount", "[Table]": "Sales", "[DataType]": "Double"},
-                    {"[Name]": "Qty", "[Table]": "Sales", "[DataType]": "Int64"}]
+            return [
+                {"[Name]": "Amount", "[Table]": "Sales", "[DataType]": "Double"},
+                {"[Name]": "Qty", "[Table]": "Sales", "[DataType]": "Int64"},
+            ]
         if "INFO.VIEW.MEASURES" in u:
-            return [{"[Name]": "Total", "[Table]": "Sales", "[Expression]": "SUM(Sales[Amount])"},
-                    {"[Name]": "Orphan", "[Table]": "Sales", "[Expression]": "1"}]
+            return [
+                {
+                    "[Name]": "Total",
+                    "[Table]": "Sales",
+                    "[Expression]": "SUM(Sales[Amount])",
+                },
+                {"[Name]": "Orphan", "[Table]": "Sales", "[Expression]": "1"},
+            ]
         if "INFO.VIEW.RELATIONSHIPS" in u:
             return []
         if "CALCDEPENDENCY" in u:
             # Total depends on Amount; nothing depends on Qty or Orphan
-            base = [{"[OBJECT]": "Total", "[TABLE]": "Sales", "[OBJECT_TYPE]": "MEASURE",
-                     "[REFERENCED_OBJECT]": "Amount", "[REFERENCED_TABLE]": "Sales", "[REFERENCED_OBJECT_TYPE]": "COLUMN"}]
-            if "REFERENCED_OBJECT] = \"Amount\"" in q:
+            base = [
+                {
+                    "[OBJECT]": "Total",
+                    "[TABLE]": "Sales",
+                    "[OBJECT_TYPE]": "MEASURE",
+                    "[REFERENCED_OBJECT]": "Amount",
+                    "[REFERENCED_TABLE]": "Sales",
+                    "[REFERENCED_OBJECT_TYPE]": "COLUMN",
+                }
+            ]
+            if 'REFERENCED_OBJECT] = "Amount"' in q:
                 return base
             if "REFERENCED_OBJECT]" in q:  # filtered for some other object
                 return []
@@ -156,11 +270,20 @@ def test_find_unused():
     with tempfile.TemporaryDirectory() as d:
         srv = server.PowerBIMCPServer()
         srv.desktop_connector = FakeDesktop()
-        srv.pbip_connector = make_pbip_with_report(d)  # report uses Sales[Amount], Sales[Total]
+        srv.pbip_connector = make_pbip_with_report(
+            d
+        )  # report uses Sales[Amount], Sales[Total]
         out = run(srv._handle_find_unused_objects({}))
         check("Qty flagged unused (not used anywhere)", "Sales[Qty]" in out, out)
         check("Orphan measure flagged unused", "Sales[Orphan]" in out, out)
-        check("Amount NOT unused (used by Total + report)", "Sales[Amount]" not in out.split("Unused columns")[1] if "Unused columns" in out else True)
+        check(
+            "Amount NOT unused (used by Total + report)",
+            (
+                "Sales[Amount]" not in out.split("Unused columns")[1]
+                if "Unused columns" in out
+                else True
+            ),
+        )
         check("Total NOT unused (used in report)", "Sales[Total]" not in out)
 
 
@@ -177,6 +300,7 @@ def test_impact():
 
 class RlsDesktop:
     """Returns role-dependent counts: East sees 30, Admin sees all (100), Empty sees 0."""
+
     current_port = 12345
 
     def __init__(self):

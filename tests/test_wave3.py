@@ -3,21 +3,28 @@ Wave 3 (governance-ops fleet) offline tests: Scanner-result summary, cross_works
 (via cached scan, no API), fleet_refresh_monitor (mock REST). Live admin paths need a tenant.
 Run: python test_wave3.py
 """
+
 import asyncio
 import json
 import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+)
 import server  # noqa: E402
-from governance import summarize_scan, aggregate_activity  # noqa: E402
+
+from governance import aggregate_activity, summarize_scan  # noqa: E402
 
 _failures = []
 
 
 def check(name, cond, detail=""):
-    print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail and not cond else ""))
+    print(
+        f"  [{'PASS' if cond else 'FAIL'}] {name}"
+        + (f": {detail}" if detail and not cond else "")
+    )
     if not cond:
         _failures.append(name)
 
@@ -26,51 +33,103 @@ def run(coro):
     return asyncio.run(coro)
 
 
-SCAN = {"workspaces": [
-    {"id": "w1", "name": "Sales WS",
-     "datasets": [
-         {"id": "d1", "name": "Sales Model", "roles": [{"name": "East"}], "sensitivityLabel": {"labelId": "L1"}},
-         {"id": "d2", "name": "Adhoc", "roles": []},
-     ],
-     "reports": [{"id": "r1", "name": "Sales Report", "datasetId": "d1"},
-                 {"id": "r2", "name": "Exec", "datasetId": "d1"}]},
-    {"id": "w2", "name": "Fin WS",
-     "datasets": [{"id": "d3", "name": "Finance", "roles": []}], "reports": []},
-]}
+SCAN = {
+    "workspaces": [
+        {
+            "id": "w1",
+            "name": "Sales WS",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "name": "Sales Model",
+                    "roles": [{"name": "East"}],
+                    "sensitivityLabel": {"labelId": "L1"},
+                },
+                {"id": "d2", "name": "Adhoc", "roles": []},
+            ],
+            "reports": [
+                {"id": "r1", "name": "Sales Report", "datasetId": "d1"},
+                {"id": "r2", "name": "Exec", "datasetId": "d1"},
+            ],
+        },
+        {
+            "id": "w2",
+            "name": "Fin WS",
+            "datasets": [{"id": "d3", "name": "Finance", "roles": []}],
+            "reports": [],
+        },
+    ]
+}
 
 
 def test_summarize():
     print("\n== summarize_scan ==")
     s = summarize_scan(SCAN, dataset_name="Sales Model")
-    check("counts", s["workspaces"] == 2 and s["datasets"] == 3 and s["reports"] == 2, str(s))
-    check("downstream reports found", set(s["downstream_reports"]) == {"Sales WS/Sales Report", "Sales WS/Exec"}, str(s["downstream_reports"]))
-    check("no-RLS datasets flagged", "Sales WS/Adhoc" in s["datasets_without_rls"] and "Fin WS/Finance" in s["datasets_without_rls"])
-    check("RLS dataset not flagged", "Sales WS/Sales Model" not in s["datasets_without_rls"])
-    check("unlabeled flagged", "Sales WS/Adhoc" in s["datasets_without_sensitivity_label"] and "Sales WS/Sales Model" not in s["datasets_without_sensitivity_label"])
+    check(
+        "counts",
+        s["workspaces"] == 2 and s["datasets"] == 3 and s["reports"] == 2,
+        str(s),
+    )
+    check(
+        "downstream reports found",
+        set(s["downstream_reports"]) == {"Sales WS/Sales Report", "Sales WS/Exec"},
+        str(s["downstream_reports"]),
+    )
+    check(
+        "no-RLS datasets flagged",
+        "Sales WS/Adhoc" in s["datasets_without_rls"]
+        and "Fin WS/Finance" in s["datasets_without_rls"],
+    )
+    check(
+        "RLS dataset not flagged",
+        "Sales WS/Sales Model" not in s["datasets_without_rls"],
+    )
+    check(
+        "unlabeled flagged",
+        "Sales WS/Adhoc" in s["datasets_without_sensitivity_label"]
+        and "Sales WS/Sales Model" not in s["datasets_without_sensitivity_label"],
+    )
 
 
 def test_lineage_handler_cache():
     print("\n== cross_workspace_lineage (cached scan, no API) ==")
     srv = server.PowerBIMCPServer()
-    srv.tenant_id = srv.client_id = srv.client_secret = "x"  # so _get_rest_connector returns a connector
+    srv.tenant_id = srv.client_id = srv.client_secret = (
+        "x"  # so _get_rest_connector returns a connector
+    )
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, "scan.json")
         with open(p, "w", encoding="utf-8") as f:
             json.dump(SCAN, f)
-        out = run(srv._handle_cross_workspace_lineage({"cache_path": p, "dataset_name": "Sales Model"}))
-        check("inventory counts shown", "Datasets: 3" in out and "Reports: 2" in out, out[:120])
+        out = run(
+            srv._handle_cross_workspace_lineage(
+                {"cache_path": p, "dataset_name": "Sales Model"}
+            )
+        )
+        check(
+            "inventory counts shown",
+            "Datasets: 3" in out and "Reports: 2" in out,
+            out[:120],
+        )
         check("downstream reports listed", "Sales Report" in out and "Exec" in out)
         check("no-RLS section", "Adhoc" in out and "Finance" in out)
 
 
 class FakeRest:
     def list_datasets(self, wid):
-        return [{"id": "d1", "name": "A", "isRefreshable": True},
-                {"id": "d2", "name": "B", "isRefreshable": False}]
+        return [
+            {"id": "d1", "name": "A", "isRefreshable": True},
+            {"id": "d2", "name": "B", "isRefreshable": False},
+        ]
 
     def get_refresh_history(self, wid, did, top=1):
-        return [{"status": "Failed", "endTime": "2026-06-21T00:00:00Z",
-                 "serviceExceptionJson": '{"errorCode":"gateway is offline"}'}]
+        return [
+            {
+                "status": "Failed",
+                "endTime": "2026-06-21T00:00:00Z",
+                "serviceExceptionJson": '{"errorCode":"gateway is offline"}',
+            }
+        ]
 
 
 def test_fleet_monitor():
@@ -96,11 +155,16 @@ def test_activity_aggregate():
     agg = aggregate_activity(events)
     check("total events", agg["total_events"] == 4)
     check("distinct users", agg["distinct_users"] == 2, str(agg["distinct_users"]))
-    check("top report is Sales (2 views)", agg["top_reports_by_views"][0] == ("Sales", 2), str(agg["top_reports_by_views"]))
+    check(
+        "top report is Sales (2 views)",
+        agg["top_reports_by_views"][0] == ("Sales", 2),
+        str(agg["top_reports_by_views"]),
+    )
 
     class FakeRest:
         def admin_get_activity_events_for_day(self, date, filter_expr=None):
             return events
+
     srv = server.PowerBIMCPServer()
     srv.tenant_id = srv.client_id = srv.client_secret = "x"
     srv.rest_connector = FakeRest()

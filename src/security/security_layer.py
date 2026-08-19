@@ -2,23 +2,35 @@
 Unified Security Layer
 Integrates PII detection, audit logging, and access policies
 """
+
 import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .pii_detector import PIIDetector, MaskingStrategy
-from .audit_logger import AuditLogger, get_audit_logger
 from .access_policy import AccessPolicyEngine, PolicyAction, PolicyCheckResult
+from .audit_logger import AuditLogger, get_audit_logger
+from .pii_detector import MaskingStrategy, PIIDetector
+
 try:
     from ..models import (
-        AuditIntegrityResult, SecurityLayerStatus, PolicySummary, SecurityReport,
-        EnabledFeatures, PiiDetectorStatus, PoliciesStatus,
+        AuditIntegrityResult,
+        EnabledFeatures,
+        PiiDetectorStatus,
+        PoliciesStatus,
+        PolicySummary,
+        SecurityLayerStatus,
+        SecurityReport,
     )
 except ImportError:
-    from models import (  # type: ignore[no-redef]
-        AuditIntegrityResult, SecurityLayerStatus, PolicySummary, SecurityReport,
-        EnabledFeatures, PiiDetectorStatus, PoliciesStatus,
+    from models import (
+        AuditIntegrityResult,
+        EnabledFeatures,
+        PiiDetectorStatus,  # type: ignore[no-redef]
+        PoliciesStatus,
+        PolicySummary,
+        SecurityLayerStatus,
+        SecurityReport,
     )
 
 logger = logging.getLogger(__name__)
@@ -54,7 +66,7 @@ class SecurityLayer:
         config_path: Optional[str] = None,
         enable_pii_detection: bool = True,
         enable_audit: bool = True,
-        enable_policies: bool = True
+        enable_policies: bool = True,
     ):
         """
         Initialize the security layer
@@ -70,21 +82,25 @@ class SecurityLayer:
         self.enable_policies = enable_policies
 
         # Initialize components
-        self.pii_detector = PIIDetector(
-            default_strategy=MaskingStrategy.PARTIAL
-        ) if enable_pii_detection else None
+        self.pii_detector = (
+            PIIDetector(default_strategy=MaskingStrategy.PARTIAL)
+            if enable_pii_detection
+            else None
+        )
 
         self.audit_logger = get_audit_logger() if enable_audit else None
 
-        self.policy_engine = AccessPolicyEngine(
-            config_path=config_path
-        ) if enable_policies else None
+        self.policy_engine = (
+            AccessPolicyEngine(config_path=config_path) if enable_policies else None
+        )
 
         # Load config if provided
         if config_path:
             self._load_config(config_path)
 
-        logger.info(f"Security layer initialized (PII: {enable_pii_detection}, Audit: {enable_audit}, Policies: {enable_policies})")
+        logger.info(
+            f"Security layer initialized (PII: {enable_pii_detection}, Audit: {enable_audit}, Policies: {enable_policies})"
+        )
 
     def _load_config(self, config_path: str):
         """Load configuration from YAML file"""
@@ -96,32 +112,36 @@ class SecurityLayer:
             return
 
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
 
             # Configure PII detector
-            if self.pii_detector and 'pii' in config:
-                pii_config = config['pii']
-                strategies = pii_config.get('strategies', {})
+            if self.pii_detector and "pii" in config:
+                pii_config = config["pii"]
+                strategies = pii_config.get("strategies", {})
                 # Map string strategies to MaskingStrategy enum
                 strategy_map = {
-                    'partial': MaskingStrategy.PARTIAL,
-                    'full': MaskingStrategy.FULL,
-                    'hash': MaskingStrategy.HASH,
-                    'redact': MaskingStrategy.REDACT,
+                    "partial": MaskingStrategy.PARTIAL,
+                    "full": MaskingStrategy.FULL,
+                    "hash": MaskingStrategy.HASH,
+                    "redact": MaskingStrategy.REDACT,
                 }
                 default_strategy = strategy_map.get(
-                    pii_config.get('default_strategy', 'partial'),
-                    MaskingStrategy.PARTIAL
+                    pii_config.get("default_strategy", "partial"),
+                    MaskingStrategy.PARTIAL,
                 )
                 self.pii_detector.default_strategy = default_strategy
 
             # Configure audit logger
-            if self.audit_logger and 'audit' in config:
-                audit_config = config['audit']
+            if self.audit_logger and "audit" in config:
+                audit_config = config["audit"]
                 # Audit logger was already initialized, but we can update settings
-                self.audit_logger.include_query_text = audit_config.get('include_query_text', True)
-                self.audit_logger.redact_sensitive = audit_config.get('redact_sensitive', True)
+                self.audit_logger.include_query_text = audit_config.get(
+                    "include_query_text", True
+                )
+                self.audit_logger.redact_sensitive = audit_config.get(
+                    "redact_sensitive", True
+                )
 
             logger.info(f"Loaded security config from: {config_path}")
 
@@ -132,7 +152,7 @@ class SecurityLayer:
         self,
         query: str,
         tables: Optional[List[str]] = None,
-        columns: Optional[List[str]] = None
+        columns: Optional[List[str]] = None,
     ) -> PolicyCheckResult:
         """
         Check if a query is allowed before execution
@@ -160,7 +180,7 @@ class SecurityLayer:
         table_name: Optional[str] = None,
         duration_ms: Optional[float] = None,
         success: bool = True,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], SecurityReport]:
         """
         Process query results through security layer
@@ -191,20 +211,21 @@ class SecurityLayer:
         # Apply access policies
         if self.enable_policies and self.policy_engine and results:
             processed_results, policy_report = self.policy_engine.apply_to_results(
-                processed_results,
-                table_name=table_name
+                processed_results, table_name=table_name
             )
-            policy_applied = policy_report.get('applied', False)
-            columns_blocked = policy_report.get('blocked_columns', [])
+            policy_applied = policy_report.get("applied", False)
+            columns_blocked = policy_report.get("blocked_columns", [])
 
         # Apply PII detection and masking
         if self.enable_pii_detection and self.pii_detector and processed_results:
-            processed_results, pii_summary = self.pii_detector.process_results(processed_results)
-            pii_detected = pii_summary['total_detections'] > 0
-            pii_count = pii_summary['total_detections']
-            pii_types = pii_summary['types_detected']
+            processed_results, pii_summary = self.pii_detector.process_results(
+                processed_results
+            )
+            pii_detected = pii_summary["total_detections"] > 0
+            pii_count = pii_summary["total_detections"]
+            pii_types = pii_summary["types_detected"]
             columns_masked.extend(
-                [d.get('column', '') for d in pii_summary.get('detections', [])]
+                [d.get("column", "") for d in pii_summary.get("detections", [])]
             )
 
         processing_time = (time.time() - start_time) * 1000
@@ -223,7 +244,7 @@ class SecurityLayer:
                 pii_detected=pii_detected,
                 pii_types=pii_types,
                 pii_count=pii_count,
-                policy_applied=table_name if policy_applied else None
+                policy_applied=table_name if policy_applied else None,
             )
 
             # Log PII detection event separately if detected
@@ -232,7 +253,7 @@ class SecurityLayer:
                     pii_types=pii_types,
                     count=pii_count,
                     columns_affected=list(set(columns_masked)),
-                    action_taken='masked'
+                    action_taken="masked",
                 )
 
         return processed_results, SecurityReport(
@@ -252,7 +273,7 @@ class SecurityLayer:
         port: Optional[int] = None,
         workspace: Optional[str] = None,
         success: bool = True,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
     ):
         """Log a connection event"""
         if self.enable_audit and self.audit_logger:
@@ -262,7 +283,7 @@ class SecurityLayer:
                 port=port,
                 workspace=workspace,
                 success=success,
-                error_message=error_message
+                error_message=error_message,
             )
 
     def log_policy_violation(
@@ -271,7 +292,7 @@ class SecurityLayer:
         violation_type: str,
         table: Optional[str] = None,
         column: Optional[str] = None,
-        query: Optional[str] = None
+        query: Optional[str] = None,
     ):
         """Log a policy violation"""
         if self.enable_audit and self.audit_logger:
@@ -280,14 +301,16 @@ class SecurityLayer:
                 violation_type=violation_type,
                 table=table,
                 column=column,
-                action_taken='blocked',
-                query=query
+                action_taken="blocked",
+                query=query,
             )
 
     def verify_audit_integrity(self) -> AuditIntegrityResult:
         """Verify the tamper-evident hash chain of the audit log."""
         if not self.enable_audit or not self.audit_logger:
-            return AuditIntegrityResult(valid=True, checked=0, message="Audit logging is disabled.")
+            return AuditIntegrityResult(
+                valid=True, checked=0, message="Audit logging is disabled."
+            )
         return self.audit_logger.verify_chain()
 
     def get_status(self) -> SecurityLayerStatus:
@@ -299,13 +322,29 @@ class SecurityLayer:
                 access_policies=self.enable_policies,
             ),
             pii_detector=PiiDetectorStatus(
-                strategy=self.pii_detector.default_strategy.value if self.pii_detector else None,
-                enabled_types=[t.value for t in self.pii_detector.enabled_types] if self.pii_detector else [],
+                strategy=(
+                    self.pii_detector.default_strategy.value
+                    if self.pii_detector
+                    else None
+                ),
+                enabled_types=(
+                    [t.value for t in self.pii_detector.enabled_types]
+                    if self.pii_detector
+                    else []
+                ),
             ),
-            audit=self.audit_logger.get_session_summary() if self.audit_logger else None,
+            audit=(
+                self.audit_logger.get_session_summary() if self.audit_logger else None
+            ),
             policies=PoliciesStatus(
-                table_count=len(self.policy_engine.table_policies) if self.policy_engine else 0,
-                global_enabled=self.policy_engine.global_policy.enabled if self.policy_engine else False,
+                table_count=(
+                    len(self.policy_engine.table_policies) if self.policy_engine else 0
+                ),
+                global_enabled=(
+                    self.policy_engine.global_policy.enabled
+                    if self.policy_engine
+                    else False
+                ),
             ),
         )
 
@@ -320,7 +359,9 @@ class SecurityLayer:
             pii_detection=self.policy_engine.global_policy.enable_pii_detection,
             pii_action=self.policy_engine.global_policy.pii_default_action.value,
             tables_with_policies=list(self.policy_engine.table_policies.keys()),
-            blocked_patterns_count=len(self.policy_engine.global_policy.blocked_patterns),
+            blocked_patterns_count=len(
+                self.policy_engine.global_policy.blocked_patterns
+            ),
         )
 
 

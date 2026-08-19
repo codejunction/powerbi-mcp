@@ -8,11 +8,14 @@ Covers:
 
 Run: python tests/test_token_refresh.py
 """
+
 import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+)
 
 from powerbi_rest_connector import PowerBIRestConnector  # noqa: E402
 
@@ -20,7 +23,10 @@ _failures = []
 
 
 def check(name, cond, detail=""):
-    print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail and not cond else ""))
+    print(
+        f"  [{'PASS' if cond else 'FAIL'}] {name}"
+        + (f": {detail}" if detail and not cond else "")
+    )
     if not cond:
         _failures.append(name)
 
@@ -59,9 +65,9 @@ class FakeSession:
 def test_proactive_refresh_after_ttl():
     print("\n== proactive refresh after TTL ==")
     conn = PowerBIRestConnector("tenant", "client", "secret")
-    conn.session = FakeSession([
-        FakeResponse(payload={"value": [{"id": "1", "name": "Workspace A"}]})
-    ])
+    conn.session = FakeSession(
+        [FakeResponse(payload={"value": [{"id": "1", "name": "Workspace A"}]})]
+    )
     conn.access_token = "stale-token"
     conn._token_acquired_at = time.monotonic() - conn.token_ttl_seconds - 5
 
@@ -77,17 +83,25 @@ def test_proactive_refresh_after_ttl():
     workspaces = conn.list_workspaces()
 
     check("proactive auth called once", calls == [True], str(calls))
-    check("workspace returned", len(workspaces) == 1 and workspaces[0]["name"] == "Workspace A", str(workspaces))
+    check(
+        "workspace returned",
+        len(workspaces) == 1 and workspaces[0]["name"] == "Workspace A",
+        str(workspaces),
+    )
     auth_header = conn.session.calls[0]["headers"]["Authorization"]
-    check("retried request uses fresh token", auth_header == "Bearer fresh-token", auth_header)
+    check(
+        "retried request uses fresh token",
+        auth_header == "Bearer fresh-token",
+        auth_header,
+    )
 
 
 def test_no_refresh_when_token_fresh():
     print("\n== no proactive refresh when token fresh ==")
     conn = PowerBIRestConnector("tenant", "client", "secret")
-    conn.session = FakeSession([
-        FakeResponse(payload={"value": [{"id": "1", "name": "Workspace A"}]})
-    ])
+    conn.session = FakeSession(
+        [FakeResponse(payload={"value": [{"id": "1", "name": "Workspace A"}]})]
+    )
     conn.access_token = "fresh-enough"
     conn._token_acquired_at = time.monotonic()
 
@@ -103,16 +117,20 @@ def test_no_refresh_when_token_fresh():
     check("authenticate not called", calls == [], str(calls))
     check("workspace still returned", len(workspaces) == 1, str(workspaces))
     auth_header = conn.session.calls[0]["headers"]["Authorization"]
-    check("request reuses cached token", auth_header == "Bearer fresh-enough", auth_header)
+    check(
+        "request reuses cached token", auth_header == "Bearer fresh-enough", auth_header
+    )
 
 
 def test_reactive_refresh_on_401():
     print("\n== reactive refresh and retry on 401 ==")
     conn = PowerBIRestConnector("tenant", "client", "secret")
-    conn.session = FakeSession([
-        FakeResponse(status_code=401, payload={"error": "expired"}),
-        FakeResponse(payload={"value": [{"id": "1", "name": "Workspace B"}]})
-    ])
+    conn.session = FakeSession(
+        [
+            FakeResponse(status_code=401, payload={"error": "expired"}),
+            FakeResponse(payload={"value": [{"id": "1", "name": "Workspace B"}]}),
+        ]
+    )
     conn.access_token = "expired-token"
     conn._token_acquired_at = time.monotonic()
 
@@ -128,10 +146,22 @@ def test_reactive_refresh_on_401():
     workspaces = conn.list_workspaces()
 
     check("forced auth called once after 401", calls == [True], str(calls))
-    check("second request executed", len(conn.session.calls) == 2, str(conn.session.calls))
-    check("first request used old token", conn.session.calls[0]["headers"]["Authorization"] == "Bearer expired-token")
-    check("retry used replacement token", conn.session.calls[1]["headers"]["Authorization"] == "Bearer replacement-token")
-    check("workspace returned after retry", len(workspaces) == 1 and workspaces[0]["name"] == "Workspace B", str(workspaces))
+    check(
+        "second request executed", len(conn.session.calls) == 2, str(conn.session.calls)
+    )
+    check(
+        "first request used old token",
+        conn.session.calls[0]["headers"]["Authorization"] == "Bearer expired-token",
+    )
+    check(
+        "retry used replacement token",
+        conn.session.calls[1]["headers"]["Authorization"] == "Bearer replacement-token",
+    )
+    check(
+        "workspace returned after retry",
+        len(workspaces) == 1 and workspaces[0]["name"] == "Workspace B",
+        str(workspaces),
+    )
 
 
 def test_custom_ttl_minutes_override():

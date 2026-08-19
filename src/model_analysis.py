@@ -23,13 +23,30 @@ Normalized model dict shape:
 }
 Every field is optional; rules degrade gracefully when a field is missing.
 """
+
 import re
 from typing import Any, Dict, List
 
 try:
-    from .models import BpaRunResult, BpaSummary, BpaFinding, AiReadinessResult, AiReadinessMetrics, ModelDiffResult, ModelDiffSummary
+    from .models import (
+        AiReadinessMetrics,
+        AiReadinessResult,
+        BpaFinding,
+        BpaRunResult,
+        BpaSummary,
+        ModelDiffResult,
+        ModelDiffSummary,
+    )
 except ImportError:
-    from models import BpaRunResult, BpaSummary, BpaFinding, AiReadinessResult, AiReadinessMetrics, ModelDiffResult, ModelDiffSummary  # type: ignore[no-redef]
+    from models import (
+        AiReadinessMetrics,
+        AiReadinessResult,
+        BpaFinding,  # type: ignore[no-redef]
+        BpaRunResult,
+        BpaSummary,
+        ModelDiffResult,
+        ModelDiffSummary,
+    )
 
 SEVERITY_ORDER = {"error": 3, "warning": 2, "info": 1}
 
@@ -74,8 +91,12 @@ def _rule_float_columns(model):
     for c in _all_columns(model):
         dt = str(c.get("data_type") or "").lower()
         if dt in ("double", "float"):
-            hits.append({"object": f"{c.get('table')}[{c.get('name')}]",
-                         "detail": "Floating-point column; prefer Fixed Decimal (Currency) for exact aggregation and smaller size."})
+            hits.append(
+                {
+                    "object": f"{c.get('table')}[{c.get('name')}]",
+                    "detail": "Floating-point column; prefer Fixed Decimal (Currency) for exact aggregation and smaller size.",
+                }
+            )
     return hits
 
 
@@ -83,8 +104,12 @@ def _rule_calculated_columns(model):
     hits = []
     for c in _all_columns(model):
         if _truthy(c.get("is_calculated")) or not _empty(c.get("expression")):
-            hits.append({"object": f"{c.get('table')}[{c.get('name')}]",
-                         "detail": "Calculated column; consider computing in Power Query / source for better compression and refresh."})
+            hits.append(
+                {
+                    "object": f"{c.get('table')}[{c.get('name')}]",
+                    "detail": "Calculated column; consider computing in Power Query / source for better compression and refresh.",
+                }
+            )
     return hits
 
 
@@ -93,8 +118,12 @@ def _rule_bidirectional(model):
     for r in model.get("relationships", []):
         cf = str(r.get("cross_filter") or "").lower()
         if cf in ("both", "bothdirections", "2"):
-            hits.append({"object": f"{r.get('from_table')}[{r.get('from_column')}] -> {r.get('to_table')}[{r.get('to_column')}]",
-                         "detail": "Bidirectional cross-filter; can cause ambiguity and slow queries. Use single direction + CROSSFILTER where needed."})
+            hits.append(
+                {
+                    "object": f"{r.get('from_table')}[{r.get('from_column')}] -> {r.get('to_table')}[{r.get('to_column')}]",
+                    "detail": "Bidirectional cross-filter; can cause ambiguity and slow queries. Use single direction + CROSSFILTER where needed.",
+                }
+            )
     return hits
 
 
@@ -103,8 +132,12 @@ def _rule_divide(model):
     for m in _all_measures(model):
         expr = m.get("expression") or ""
         if _DIV_RE.search(expr) and "divide(" not in expr.lower():
-            hits.append({"object": f"{m.get('table')}[{m.get('name')}]",
-                         "detail": "Uses '/' division; use DIVIDE(numerator, denominator) to handle divide-by-zero safely."})
+            hits.append(
+                {
+                    "object": f"{m.get('table')}[{m.get('name')}]",
+                    "detail": "Uses '/' division; use DIVIDE(numerator, denominator) to handle divide-by-zero safely.",
+                }
+            )
     return hits
 
 
@@ -112,19 +145,36 @@ def _rule_iferror(model):
     hits = []
     for m in _all_measures(model):
         if "iferror(" in (m.get("expression") or "").lower():
-            hits.append({"object": f"{m.get('table')}[{m.get('name')}]",
-                         "detail": "Uses IFERROR; prefer DIVIDE / explicit error handling for performance and clarity."})
+            hits.append(
+                {
+                    "object": f"{m.get('table')}[{m.get('name')}]",
+                    "detail": "Uses IFERROR; prefer DIVIDE / explicit error handling for performance and clarity.",
+                }
+            )
     return hits
 
 
 def _rule_trailing_space(model):
     hits = []
-    objs = ([(t.get("name"), "table") for t in model.get("tables", [])]
-            + [(f"{m.get('table')}[{m.get('name')}]", m.get("name")) for m in _all_measures(model)]
-            + [(f"{c.get('table')}[{c.get('name')}]", c.get("name")) for c in _all_columns(model)])
+    objs = (
+        [(t.get("name"), "table") for t in model.get("tables", [])]
+        + [
+            (f"{m.get('table')}[{m.get('name')}]", m.get("name"))
+            for m in _all_measures(model)
+        ]
+        + [
+            (f"{c.get('table')}[{c.get('name')}]", c.get("name"))
+            for c in _all_columns(model)
+        ]
+    )
     for label, name in objs:
         if isinstance(name, str) and name != name.strip():
-            hits.append({"object": label, "detail": "Name has leading/trailing whitespace; trim it."})
+            hits.append(
+                {
+                    "object": label,
+                    "detail": "Name has leading/trailing whitespace; trim it.",
+                }
+            )
     return hits
 
 
@@ -134,8 +184,12 @@ def _rule_measure_no_format(model):
         if _truthy(m.get("is_hidden")):
             continue
         if _empty(m.get("format_string")):
-            hits.append({"object": f"{m.get('table')}[{m.get('name')}]",
-                         "detail": "Visible measure has no format string; set one (e.g. '#,##0' or '0.0%')."})
+            hits.append(
+                {
+                    "object": f"{m.get('table')}[{m.get('name')}]",
+                    "detail": "Visible measure has no format string; set one (e.g. '#,##0' or '0.0%').",
+                }
+            )
     return hits
 
 
@@ -145,8 +199,12 @@ def _rule_measure_no_description(model):
         if _truthy(m.get("is_hidden")):
             continue
         if _empty(m.get("description")):
-            hits.append({"object": f"{m.get('table')}[{m.get('name')}]",
-                         "detail": "Visible measure has no description; descriptions improve maintainability and Copilot/agent accuracy."})
+            hits.append(
+                {
+                    "object": f"{m.get('table')}[{m.get('name')}]",
+                    "detail": "Visible measure has no description; descriptions improve maintainability and Copilot/agent accuracy.",
+                }
+            )
     return hits
 
 
@@ -156,8 +214,12 @@ def _rule_column_no_description(model):
         if _truthy(c.get("is_hidden")):
             continue
         if _empty(c.get("description")):
-            hits.append({"object": f"{c.get('table')}[{c.get('name')}]",
-                         "detail": "Visible column has no description (lowers AI-readiness)."})
+            hits.append(
+                {
+                    "object": f"{c.get('table')}[{c.get('name')}]",
+                    "detail": "Visible column has no description (lowers AI-readiness).",
+                }
+            )
     return hits
 
 
@@ -175,8 +237,12 @@ def _rule_table_no_relationship(model):
         if len(cols) <= 1 and not t.get("measures"):
             continue
         if name not in used and not _truthy(t.get("is_hidden")):
-            hits.append({"object": name,
-                         "detail": "Table participates in no relationship; verify it is intentionally disconnected."})
+            hits.append(
+                {
+                    "object": name,
+                    "detail": "Table participates in no relationship; verify it is intentionally disconnected.",
+                }
+            )
     return hits
 
 
@@ -190,39 +256,100 @@ def _rule_rel_type_mismatch(model):
         ft = idx.get((r.get("from_table"), r.get("from_column")))
         tt = idx.get((r.get("to_table"), r.get("to_column")))
         if ft and tt and ft != tt:
-            hits.append({"object": f"{r.get('from_table')}[{r.get('from_column')}] -> {r.get('to_table')}[{r.get('to_column')}]",
-                         "detail": f"Relationship columns have different data types ({ft} vs {tt}); can cause errors or slow joins."})
+            hits.append(
+                {
+                    "object": f"{r.get('from_table')}[{r.get('from_column')}] -> {r.get('to_table')}[{r.get('to_column')}]",
+                    "detail": f"Relationship columns have different data types ({ft} vs {tt}); can cause errors or slow joins.",
+                }
+            )
     return hits
 
 
 # Rule registry: id, category, severity, name, description, check
 DEFAULT_BPA_RULES = [
-    {"id": "PERF_FLOAT_COLUMN", "category": "Performance", "severity": "warning",
-     "name": "Avoid floating-point data types", "check": _rule_float_columns},
-    {"id": "PERF_CALC_COLUMN", "category": "Performance", "severity": "info",
-     "name": "Reduce use of calculated columns", "check": _rule_calculated_columns},
-    {"id": "PERF_BIDIRECTIONAL", "category": "Performance", "severity": "warning",
-     "name": "Avoid bidirectional relationships", "check": _rule_bidirectional},
-    {"id": "DAX_USE_DIVIDE", "category": "DAX", "severity": "warning",
-     "name": "Use DIVIDE for division", "check": _rule_divide},
-    {"id": "DAX_AVOID_IFERROR", "category": "DAX", "severity": "warning",
-     "name": "Avoid IFERROR", "check": _rule_iferror},
-    {"id": "NAMING_TRAILING_SPACE", "category": "Naming", "severity": "error",
-     "name": "No leading/trailing spaces in names", "check": _rule_trailing_space},
-    {"id": "FORMAT_MEASURE_NO_FORMAT", "category": "Formatting", "severity": "warning",
-     "name": "Measures should have a format string", "check": _rule_measure_no_format},
-    {"id": "MAINT_MEASURE_NO_DESC", "category": "Maintenance", "severity": "info",
-     "name": "Measures should have descriptions", "check": _rule_measure_no_description},
-    {"id": "MAINT_COLUMN_NO_DESC", "category": "Maintenance", "severity": "info",
-     "name": "Visible columns should have descriptions", "check": _rule_column_no_description},
-    {"id": "MAINT_TABLE_NO_REL", "category": "Maintenance", "severity": "warning",
-     "name": "Tables should participate in a relationship", "check": _rule_table_no_relationship},
-    {"id": "ERR_REL_TYPE_MISMATCH", "category": "Error Prevention", "severity": "warning",
-     "name": "Relationship columns should share a data type", "check": _rule_rel_type_mismatch},
+    {
+        "id": "PERF_FLOAT_COLUMN",
+        "category": "Performance",
+        "severity": "warning",
+        "name": "Avoid floating-point data types",
+        "check": _rule_float_columns,
+    },
+    {
+        "id": "PERF_CALC_COLUMN",
+        "category": "Performance",
+        "severity": "info",
+        "name": "Reduce use of calculated columns",
+        "check": _rule_calculated_columns,
+    },
+    {
+        "id": "PERF_BIDIRECTIONAL",
+        "category": "Performance",
+        "severity": "warning",
+        "name": "Avoid bidirectional relationships",
+        "check": _rule_bidirectional,
+    },
+    {
+        "id": "DAX_USE_DIVIDE",
+        "category": "DAX",
+        "severity": "warning",
+        "name": "Use DIVIDE for division",
+        "check": _rule_divide,
+    },
+    {
+        "id": "DAX_AVOID_IFERROR",
+        "category": "DAX",
+        "severity": "warning",
+        "name": "Avoid IFERROR",
+        "check": _rule_iferror,
+    },
+    {
+        "id": "NAMING_TRAILING_SPACE",
+        "category": "Naming",
+        "severity": "error",
+        "name": "No leading/trailing spaces in names",
+        "check": _rule_trailing_space,
+    },
+    {
+        "id": "FORMAT_MEASURE_NO_FORMAT",
+        "category": "Formatting",
+        "severity": "warning",
+        "name": "Measures should have a format string",
+        "check": _rule_measure_no_format,
+    },
+    {
+        "id": "MAINT_MEASURE_NO_DESC",
+        "category": "Maintenance",
+        "severity": "info",
+        "name": "Measures should have descriptions",
+        "check": _rule_measure_no_description,
+    },
+    {
+        "id": "MAINT_COLUMN_NO_DESC",
+        "category": "Maintenance",
+        "severity": "info",
+        "name": "Visible columns should have descriptions",
+        "check": _rule_column_no_description,
+    },
+    {
+        "id": "MAINT_TABLE_NO_REL",
+        "category": "Maintenance",
+        "severity": "warning",
+        "name": "Tables should participate in a relationship",
+        "check": _rule_table_no_relationship,
+    },
+    {
+        "id": "ERR_REL_TYPE_MISMATCH",
+        "category": "Error Prevention",
+        "severity": "warning",
+        "name": "Relationship columns should share a data type",
+        "check": _rule_rel_type_mismatch,
+    },
 ]
 
 
-def run_bpa(model: Dict[str, Any], rules=None, categories=None, min_severity="info") -> BpaRunResult:
+def run_bpa(
+    model: Dict[str, Any], rules=None, categories=None, min_severity="info"
+) -> BpaRunResult:
     """Run the Best Practice Analyzer over a normalized model dict.
 
     Returns BpaRunResult with summary and findings.
@@ -239,20 +366,35 @@ def run_bpa(model: Dict[str, Any], rules=None, categories=None, min_severity="in
             continue
         try:
             for hit in rule["check"](model):
-                findings.append({
+                findings.append(
+                    {
+                        "rule_id": rule["id"],
+                        "name": rule["name"],
+                        "category": rule["category"],
+                        "severity": rule["severity"],
+                        "object": hit.get("object"),
+                        "detail": hit.get("detail"),
+                    }
+                )
+        except Exception as e:  # a malformed rule must not break the whole scan
+            findings.append(
+                {
                     "rule_id": rule["id"],
                     "name": rule["name"],
                     "category": rule["category"],
-                    "severity": rule["severity"],
-                    "object": hit.get("object"),
-                    "detail": hit.get("detail"),
-                })
-        except Exception as e:  # a malformed rule must not break the whole scan
-            findings.append({"rule_id": rule["id"], "name": rule["name"],
-                             "category": rule["category"], "severity": "info",
-                             "object": "(rule error)", "detail": str(e)})
+                    "severity": "info",
+                    "object": "(rule error)",
+                    "detail": str(e),
+                }
+            )
 
-    findings.sort(key=lambda f: (-SEVERITY_ORDER.get(f["severity"], 1), f["category"], f["rule_id"]))
+    findings.sort(
+        key=lambda f: (
+            -SEVERITY_ORDER.get(f["severity"], 1),
+            f["category"],
+            f["rule_id"],
+        )
+    )
     by_sev = {"error": 0, "warning": 0, "info": 0}
     by_cat: Dict[str, int] = {}
     for f in findings:
@@ -263,7 +405,13 @@ def run_bpa(model: Dict[str, Any], rules=None, categories=None, min_severity="in
             total=len(findings),
             by_severity=by_sev,
             by_category=by_cat,
-            rules_run=len([r for r in rules if not cat_filter or r["category"].lower() in cat_filter]),
+            rules_run=len(
+                [
+                    r
+                    for r in rules
+                    if not cat_filter or r["category"].lower() in cat_filter
+                ]
+            ),
         ),
         findings=[BpaFinding(**f) for f in findings],
     )
@@ -310,17 +458,31 @@ def audit_ai_readiness(model: Dict[str, Any]) -> AiReadinessResult:
 
     recs = []
     if metrics["measures_with_description_pct"] < 90 and visible_measures:
-        recs.append(f"Add descriptions to measures ({m_desc}/{len(visible_measures)} done) - the strongest lever for NL-to-DAX accuracy.")
+        recs.append(
+            f"Add descriptions to measures ({m_desc}/{len(visible_measures)} done) - the strongest lever for NL-to-DAX accuracy."
+        )
     if metrics["measures_with_format_pct"] < 90 and visible_measures:
-        recs.append(f"Set format strings on measures ({m_fmt}/{len(visible_measures)} done).")
+        recs.append(
+            f"Set format strings on measures ({m_fmt}/{len(visible_measures)} done)."
+        )
     if metrics["columns_with_description_pct"] < 70 and visible_columns:
-        recs.append(f"Describe visible columns ({c_desc}/{len(visible_columns)} done), especially keys and ambiguous names.")
+        recs.append(
+            f"Describe visible columns ({c_desc}/{len(visible_columns)} done), especially keys and ambiguous names."
+        )
     if metrics["tables_with_description_pct"] < 80 and tables:
-        recs.append(f"Describe tables ({t_desc}/{len(tables)} done) so agents pick the right fact/dimension.")
+        recs.append(
+            f"Describe tables ({t_desc}/{len(tables)} done) so agents pick the right fact/dimension."
+        )
     if not recs:
-        recs.append("Model is well documented. Consider adding synonyms / verified answers for Copilot.")
+        recs.append(
+            "Model is well documented. Consider adding synonyms / verified answers for Copilot."
+        )
 
-    grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 40 else "F"
+    grade = (
+        "A"
+        if score >= 90
+        else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 40 else "F"
+    )
     return AiReadinessResult(
         score=score,
         grade=grade,
@@ -339,7 +501,10 @@ def dax_test_verdict(actual, expected, tolerance=0):
         return passed, f"{actual!r} vs expected {expected!r}"
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
         if tolerance:
-            return abs(actual - expected) <= tolerance, f"{actual} vs {expected} (±{tolerance})"
+            return (
+                abs(actual - expected) <= tolerance,
+                f"{actual} vs {expected} (±{tolerance})",
+            )
         return actual == expected, f"{actual} vs {expected}"
     return str(actual) == str(expected), f"{actual!r} vs expected {expected!r}"
 
@@ -350,6 +515,7 @@ def diff_models(before: Dict[str, Any], after: Dict[str, Any]) -> ModelDiffResul
     Returns ModelDiffResult with has_changes, total_changes, summary, and markdown.
     Pure function - used for PR/CI 'what changed' summaries and pre-deploy review.
     """
+
     def tindex(m):
         return {t.get("name"): t for t in m.get("tables", []) if t.get("name")}
 
@@ -371,16 +537,20 @@ def diff_models(before: Dict[str, Any], after: Dict[str, Any]) -> ModelDiffResul
         cols["added"] += [f"{name}[{c}]" for c in sorted(set(ca) - set(cb))]
         cols["removed"] += [f"{name}[{c}]" for c in sorted(set(cb) - set(ca))]
         for c in sorted(set(cb) & set(ca)):
-            if (cb[c].get('data_type') != ca[c].get('data_type')
-                    or (cb[c].get('description') or '') != (ca[c].get('description') or '')):
+            if cb[c].get("data_type") != ca[c].get("data_type") or (
+                cb[c].get("description") or ""
+            ) != (ca[c].get("description") or ""):
                 cols["changed"].append(f"{name}[{c}]")
         mb, ma = idx(tb[name].get("measures", [])), idx(ta[name].get("measures", []))
         measures["added"] += [f"{name}[{m}]" for m in sorted(set(ma) - set(mb))]
         measures["removed"] += [f"{name}[{m}]" for m in sorted(set(mb) - set(ma))]
         for m in sorted(set(mb) & set(ma)):
-            if ((mb[m].get('expression') or '') != (ma[m].get('expression') or '')
-                    or (mb[m].get('format_string') or '') != (ma[m].get('format_string') or '')
-                    or (mb[m].get('description') or '') != (ma[m].get('description') or '')):
+            if (
+                (mb[m].get("expression") or "") != (ma[m].get("expression") or "")
+                or (mb[m].get("format_string") or "")
+                != (ma[m].get("format_string") or "")
+                or (mb[m].get("description") or "") != (ma[m].get("description") or "")
+            ):
                 measures["changed"].append(f"{name}[{m}]")
 
     rb = {relkey(r) for r in before.get("relationships", [])}
@@ -389,10 +559,16 @@ def diff_models(before: Dict[str, Any], after: Dict[str, Any]) -> ModelDiffResul
     rel_removed = sorted(rb - ra)
 
     summary = {
-        "tables_added": len(added_tables), "tables_removed": len(removed_tables),
-        "columns_added": len(cols["added"]), "columns_removed": len(cols["removed"]), "columns_changed": len(cols["changed"]),
-        "measures_added": len(measures["added"]), "measures_removed": len(measures["removed"]), "measures_changed": len(measures["changed"]),
-        "relationships_added": len(rel_added), "relationships_removed": len(rel_removed),
+        "tables_added": len(added_tables),
+        "tables_removed": len(removed_tables),
+        "columns_added": len(cols["added"]),
+        "columns_removed": len(cols["removed"]),
+        "columns_changed": len(cols["changed"]),
+        "measures_added": len(measures["added"]),
+        "measures_removed": len(measures["removed"]),
+        "measures_changed": len(measures["changed"]),
+        "relationships_added": len(rel_added),
+        "relationships_removed": len(rel_removed),
     }
     total = sum(summary.values())
 
@@ -438,7 +614,8 @@ def _md_escape(s) -> str:
 
 def render_data_dictionary(model: Dict[str, Any], fmt: str = "markdown") -> str:
     """Render a portable data dictionary (tables, columns, measures, relationships) from a
-    normalized model dict, with a documentation-coverage summary. Pure function (no I/O)."""
+    normalized model dict, with a documentation-coverage summary. Pure function (no I/O).
+    """
     ai = audit_ai_readiness(model)
     tables = model.get("tables", [])
     rels = model.get("relationships", [])
@@ -448,9 +625,13 @@ def render_data_dictionary(model: Dict[str, Any], fmt: str = "markdown") -> str:
     lines = []
     lines.append("# Data Dictionary")
     lines.append("")
-    lines.append(f"- Tables: **{len(tables)}**  |  Columns: **{total_columns}**  |  "
-                 f"Measures: **{total_measures}**  |  Relationships: **{len(rels)}**")
-    lines.append(f"- Documentation / AI-readiness score: **{ai.score}/100 (grade {ai.grade})**")
+    lines.append(
+        f"- Tables: **{len(tables)}**  |  Columns: **{total_columns}**  |  "
+        f"Measures: **{total_measures}**  |  Relationships: **{len(rels)}**"
+    )
+    lines.append(
+        f"- Documentation / AI-readiness score: **{ai.score}/100 (grade {ai.grade})**"
+    )
     lines.append("")
 
     for t in sorted(tables, key=lambda x: str(x.get("name", "")).lower()):
@@ -466,8 +647,10 @@ def render_data_dictionary(model: Dict[str, Any], fmt: str = "markdown") -> str:
             lines.append("| Column | Type | Hidden | Description |")
             lines.append("|---|---|---|---|")
             for c in cols:
-                lines.append(f"| {_md_escape(c.get('name'))} | {_md_escape(c.get('data_type'))} | "
-                             f"{'yes' if _truthy(c.get('is_hidden')) else ''} | {_md_escape(c.get('description'))} |")
+                lines.append(
+                    f"| {_md_escape(c.get('name'))} | {_md_escape(c.get('data_type'))} | "
+                    f"{'yes' if _truthy(c.get('is_hidden')) else ''} | {_md_escape(c.get('description'))} |"
+                )
             lines.append("")
         measures = t.get("measures", [])
         if measures:
@@ -477,8 +660,10 @@ def render_data_dictionary(model: Dict[str, Any], fmt: str = "markdown") -> str:
             for m in measures:
                 expr = m.get("expression")
                 expr_cell = f"`{_md_escape(expr)}`" if expr else "_(unavailable)_"
-                lines.append(f"| {_md_escape(m.get('name'))} | {_md_escape(m.get('format_string'))} | "
-                             f"{_md_escape(m.get('description'))} | {expr_cell} |")
+                lines.append(
+                    f"| {_md_escape(m.get('name'))} | {_md_escape(m.get('format_string'))} | "
+                    f"{_md_escape(m.get('description'))} | {expr_cell} |"
+                )
             lines.append("")
 
     if rels:
@@ -488,14 +673,22 @@ def render_data_dictionary(model: Dict[str, Any], fmt: str = "markdown") -> str:
         for r in rels:
             frm = f"{r.get('from_table')}[{r.get('from_column')}]"
             to = f"{r.get('to_table')}[{r.get('to_column')}]"
-            active = "" if (str(r.get("is_active")).lower() in ("false", "0")) else "yes"
-            lines.append(f"| {_md_escape(frm)} | {_md_escape(to)} | {active} | {_md_escape(r.get('cross_filter'))} |")
+            active = (
+                "" if (str(r.get("is_active")).lower() in ("false", "0")) else "yes"
+            )
+            lines.append(
+                f"| {_md_escape(frm)} | {_md_escape(to)} | {active} | {_md_escape(r.get('cross_filter'))} |"
+            )
         lines.append("")
 
     md = "\n".join(lines)
     if fmt == "html":
         # Minimal, dependency-free HTML wrapper (no markdown lib needed).
-        body = (md.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-        return ("<!doctype html><meta charset='utf-8'><title>Data Dictionary</title>"
-                "<pre style='font-family:Consolas,monospace;font-size:13px'>" + body + "</pre>")
+        body = md.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return (
+            "<!doctype html><meta charset='utf-8'><title>Data Dictionary</title>"
+            "<pre style='font-family:Consolas,monospace;font-size:13px'>"
+            + body
+            + "</pre>"
+        )
     return md

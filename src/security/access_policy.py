@@ -2,6 +2,7 @@
 Data Access Policy Engine
 Enforces data access rules on queries and results
 """
+
 import hashlib
 import logging
 import random
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -57,17 +59,19 @@ def mask_value(value: Any) -> Any:
 
 class PolicyAction(Enum):
     """Actions that can be taken on data"""
-    ALLOW = "allow"         # Return data as-is
-    MASK = "mask"           # Mask the data (use PII detector)
-    BLOCK = "block"         # Block access entirely (return null/error)
+
+    ALLOW = "allow"  # Return data as-is
+    MASK = "mask"  # Mask the data (use PII detector)
+    BLOCK = "block"  # Block access entirely (return null/error)
     AGGREGATE_ONLY = "aggregate_only"  # Only allow in aggregations
-    HASH = "hash"           # Return hashed value
-    REDACT = "redact"       # Replace with [REDACTED]
+    HASH = "hash"  # Return hashed value
+    REDACT = "redact"  # Replace with [REDACTED]
     NUMERIC_MASK = "numeric_mask"  # Scale numbers by a per-session coefficient (hide values, keep stats)
 
 
 class PolicyLevel(Enum):
     """Level at which policy applies"""
+
     TABLE = "table"
     COLUMN = "column"
     GLOBAL = "global"
@@ -76,6 +80,7 @@ class PolicyLevel(Enum):
 @dataclass
 class ColumnPolicy:
     """Policy for a specific column"""
+
     name: str
     action: PolicyAction = PolicyAction.ALLOW
     mask_strategy: Optional[str] = None  # partial, full, hash
@@ -84,17 +89,18 @@ class ColumnPolicy:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'name': self.name,
-            'action': self.action.value,
-            'mask_strategy': self.mask_strategy,
-            'reason': self.reason,
-            'sensitivity': self.sensitivity
+            "name": self.name,
+            "action": self.action.value,
+            "mask_strategy": self.mask_strategy,
+            "reason": self.reason,
+            "sensitivity": self.sensitivity,
         }
 
 
 @dataclass
 class TablePolicy:
     """Policy for a specific table"""
+
     name: str
     default_action: PolicyAction = PolicyAction.ALLOW
     columns: Dict[str, ColumnPolicy] = field(default_factory=dict)
@@ -105,7 +111,7 @@ class TablePolicy:
 
     def get_column_policy(self, column_name: str) -> ColumnPolicy:
         """Get policy for a column, or default if not specified"""
-        col_lower = column_name.lower().strip('[]')
+        col_lower = column_name.lower().strip("[]")
 
         # Check exact match
         if col_lower in self.columns:
@@ -113,32 +119,30 @@ class TablePolicy:
 
         # Check pattern matches
         for col_pattern, policy in self.columns.items():
-            if '*' in col_pattern:
-                pattern = col_pattern.replace('*', '.*')
+            if "*" in col_pattern:
+                pattern = col_pattern.replace("*", ".*")
                 if re.match(pattern, col_lower, re.IGNORECASE):
                     return policy
 
         # Return default policy
-        return ColumnPolicy(
-            name=column_name,
-            action=self.default_action
-        )
+        return ColumnPolicy(name=column_name, action=self.default_action)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'name': self.name,
-            'default_action': self.default_action.value,
-            'columns': {k: v.to_dict() for k, v in self.columns.items()},
-            'max_rows': self.max_rows,
-            'require_filter': self.require_filter,
-            'sensitivity': self.sensitivity,
-            'description': self.description
+            "name": self.name,
+            "default_action": self.default_action.value,
+            "columns": {k: v.to_dict() for k, v in self.columns.items()},
+            "max_rows": self.max_rows,
+            "require_filter": self.require_filter,
+            "sensitivity": self.sensitivity,
+            "description": self.description,
         }
 
 
 @dataclass
 class GlobalPolicy:
     """Global policy settings"""
+
     enabled: bool = True
     default_action: PolicyAction = PolicyAction.ALLOW
     max_rows_per_query: int = 10000
@@ -149,19 +153,20 @@ class GlobalPolicy:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'enabled': self.enabled,
-            'default_action': self.default_action.value,
-            'max_rows_per_query': self.max_rows_per_query,
-            'enable_pii_detection': self.enable_pii_detection,
-            'pii_default_action': self.pii_default_action.value,
-            'blocked_patterns': self.blocked_patterns,
-            'audit_all_queries': self.audit_all_queries
+            "enabled": self.enabled,
+            "default_action": self.default_action.value,
+            "max_rows_per_query": self.max_rows_per_query,
+            "enable_pii_detection": self.enable_pii_detection,
+            "pii_default_action": self.pii_default_action.value,
+            "blocked_patterns": self.blocked_patterns,
+            "audit_all_queries": self.audit_all_queries,
         }
 
 
 @dataclass
 class PolicyCheckResult:
     """Result of a policy check"""
+
     allowed: bool
     action: PolicyAction
     reason: str = ""
@@ -220,7 +225,7 @@ class AccessPolicyEngine:
             return False
 
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
 
             self._parse_config(config)
@@ -239,18 +244,18 @@ class AccessPolicyEngine:
         """Parse configuration dictionary into policy objects"""
 
         # Parse global settings
-        if 'global' in config:
-            g = config['global']
+        if "global" in config:
+            g = config["global"]
             # Handle None values from YAML (e.g., when list items are commented out)
-            blocked_patterns = g.get('blocked_patterns') or []
+            blocked_patterns = g.get("blocked_patterns") or []
             self.global_policy = GlobalPolicy(
-                enabled=g.get('enabled', True),
-                default_action=PolicyAction(g.get('default_action', 'allow')),
-                max_rows_per_query=g.get('max_rows_per_query', 10000),
-                enable_pii_detection=g.get('enable_pii_detection', True),
-                pii_default_action=PolicyAction(g.get('pii_default_action', 'mask')),
+                enabled=g.get("enabled", True),
+                default_action=PolicyAction(g.get("default_action", "allow")),
+                max_rows_per_query=g.get("max_rows_per_query", 10000),
+                enable_pii_detection=g.get("enable_pii_detection", True),
+                pii_default_action=PolicyAction(g.get("pii_default_action", "mask")),
                 blocked_patterns=blocked_patterns,
-                audit_all_queries=g.get('audit_all_queries', True)
+                audit_all_queries=g.get("audit_all_queries", True),
             )
 
             # Compile blocked patterns
@@ -260,32 +265,34 @@ class AccessPolicyEngine:
             ]
 
         # Parse table policies
-        if 'tables' in config:
-            for table_config in config['tables']:
-                table_name = table_config.get('name', '').lower()
+        if "tables" in config:
+            for table_config in config["tables"]:
+                table_name = table_config.get("name", "").lower()
                 if not table_name:
                     continue
 
                 columns = {}
-                for col_config in table_config.get('columns', []):
-                    col_name = col_config.get('name', '').lower()
+                for col_config in table_config.get("columns", []):
+                    col_name = col_config.get("name", "").lower()
                     if col_name:
                         columns[col_name] = ColumnPolicy(
                             name=col_name,
-                            action=PolicyAction(col_config.get('action', 'allow')),
-                            mask_strategy=col_config.get('mask_strategy'),
-                            reason=col_config.get('reason', ''),
-                            sensitivity=col_config.get('sensitivity', 'normal')
+                            action=PolicyAction(col_config.get("action", "allow")),
+                            mask_strategy=col_config.get("mask_strategy"),
+                            reason=col_config.get("reason", ""),
+                            sensitivity=col_config.get("sensitivity", "normal"),
                         )
 
                 self.table_policies[table_name] = TablePolicy(
                     name=table_name,
-                    default_action=PolicyAction(table_config.get('default_action', 'allow')),
+                    default_action=PolicyAction(
+                        table_config.get("default_action", "allow")
+                    ),
                     columns=columns,
-                    max_rows=table_config.get('max_rows'),
-                    require_filter=table_config.get('require_filter', False),
-                    sensitivity=table_config.get('sensitivity', 'normal'),
-                    description=table_config.get('description', '')
+                    max_rows=table_config.get("max_rows"),
+                    require_filter=table_config.get("require_filter", False),
+                    sensitivity=table_config.get("sensitivity", "normal"),
+                    description=table_config.get("description", ""),
                 )
 
     def add_table_policy(self, policy: TablePolicy):
@@ -297,11 +304,13 @@ class AccessPolicyEngine:
         table_lower = table_name.lower()
         if table_lower not in self.table_policies:
             self.table_policies[table_lower] = TablePolicy(name=table_name)
-        self.table_policies[table_lower].columns[column_policy.name.lower()] = column_policy
+        self.table_policies[table_lower].columns[
+            column_policy.name.lower()
+        ] = column_policy
 
     def get_table_policy(self, table_name: str) -> Optional[TablePolicy]:
         """Get policy for a table"""
-        return self.table_policies.get(table_name.lower().strip('[]\''))
+        return self.table_policies.get(table_name.lower().strip("[]'"))
 
     @staticmethod
     def extract_references(query: str) -> Tuple[List[str], List[str]]:
@@ -317,7 +326,7 @@ class AccessPolicyEngine:
         for m in _COLREF_RE.finditer(query):
             columns.add(m.group(1).strip())
             # Table names are short; a bounded lookback keeps this linear (ReDoS-safe).
-            before = query[max(0, m.start() - 256):m.start()]
+            before = query[max(0, m.start() - 256) : m.start()]
             tm = _TABLE_BEFORE_RE.search(before)
             if tm:
                 tbl = (tm.group(1) or tm.group(2) or "").strip()
@@ -349,15 +358,17 @@ class AccessPolicyEngine:
                 candidates.append(tp)
         else:
             # Owning table unknown (e.g. a measure): consider every concrete table policy.
-            candidates.extend(tp for k, tp in self.table_policies.items() if k != '*')
-        wildcard = self.table_policies.get('*')
+            candidates.extend(tp for k, tp in self.table_policies.items() if k != "*")
+        wildcard = self.table_policies.get("*")
         if wildcard:
             candidates.append(wildcard)
 
         best = ColumnPolicy(name=column, action=self.global_policy.default_action)
         for tp in candidates:
             cp = tp.get_column_policy(column)
-            if self._ACTION_RANK.get(cp.action, 0) > self._ACTION_RANK.get(best.action, 0):
+            if self._ACTION_RANK.get(cp.action, 0) > self._ACTION_RANK.get(
+                best.action, 0
+            ):
                 best = cp
         return best
 
@@ -365,7 +376,7 @@ class AccessPolicyEngine:
         self,
         query: str,
         tables: Optional[List[str]] = None,
-        columns: Optional[List[str]] = None
+        columns: Optional[List[str]] = None,
     ) -> PolicyCheckResult:
         """
         Check if a query is allowed by policies
@@ -390,11 +401,13 @@ class AccessPolicyEngine:
         # Check blocked patterns
         for pattern in self._compiled_blocked_patterns:
             if pattern.search(query):
-                violations.append({
-                    'type': 'blocked_pattern',
-                    'pattern': pattern.pattern,
-                    'message': f"Query matches blocked pattern: {pattern.pattern}"
-                })
+                violations.append(
+                    {
+                        "type": "blocked_pattern",
+                        "pattern": pattern.pattern,
+                        "message": f"Query matches blocked pattern: {pattern.pattern}",
+                    }
+                )
 
         # Check table policies
         if tables:
@@ -403,11 +416,13 @@ class AccessPolicyEngine:
                 if table_policy:
                     # Check table-level restrictions
                     if table_policy.default_action == PolicyAction.BLOCK:
-                        violations.append({
-                            'type': 'table_blocked',
-                            'table': table,
-                            'message': f"Access to table '{table}' is blocked"
-                        })
+                        violations.append(
+                            {
+                                "type": "table_blocked",
+                                "table": table,
+                                "message": f"Access to table '{table}' is blocked",
+                            }
+                        )
 
                     # Check max rows
                     if table_policy.max_rows:
@@ -416,7 +431,10 @@ class AccessPolicyEngine:
                     # Check require_filter
                     if table_policy.require_filter:
                         # Simple check - look for FILTER or WHERE-like clauses
-                        if 'FILTER' not in query.upper() and 'WHERE' not in query.upper():
+                        if (
+                            "FILTER" not in query.upper()
+                            and "WHERE" not in query.upper()
+                        ):
                             warnings.append(f"Table '{table}' requires a filter clause")
 
         # Check column policies (wildcard-aware; consults concrete tables + the '*' policy)
@@ -427,15 +445,24 @@ class AccessPolicyEngine:
                 if col_policy.action == PolicyAction.BLOCK:
                     if column not in columns_to_block:
                         columns_to_block.append(column)
-                    msg = col_policy.reason or f"Column '{column}' access blocked by policy"
-                    violations.append({
-                        'type': 'column_blocked',
-                        'column': column,
-                        'reason': msg,
-                        'message': msg
-                    })
+                    msg = (
+                        col_policy.reason
+                        or f"Column '{column}' access blocked by policy"
+                    )
+                    violations.append(
+                        {
+                            "type": "column_blocked",
+                            "column": column,
+                            "reason": msg,
+                            "message": msg,
+                        }
+                    )
 
-                elif col_policy.action in (PolicyAction.MASK, PolicyAction.HASH, PolicyAction.REDACT):
+                elif col_policy.action in (
+                    PolicyAction.MASK,
+                    PolicyAction.HASH,
+                    PolicyAction.REDACT,
+                ):
                     if column not in columns_to_mask:
                         columns_to_mask.append(column)
                         warnings.append(f"Column '{column}' will be masked/redacted")
@@ -447,18 +474,16 @@ class AccessPolicyEngine:
         return PolicyCheckResult(
             allowed=allowed,
             action=action,
-            reason=violations[0]['message'] if violations else "",
+            reason=violations[0]["message"] if violations else "",
             violations=violations,
             warnings=warnings,
             columns_to_mask=columns_to_mask,
             columns_to_block=columns_to_block,
-            max_rows=max_rows
+            max_rows=max_rows,
         )
 
     def apply_to_results(
-        self,
-        results: List[Dict[str, Any]],
-        table_name: Optional[str] = None
+        self, results: List[Dict[str, Any]], table_name: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Apply policies to query results
@@ -471,7 +496,7 @@ class AccessPolicyEngine:
             Tuple of (processed_results, policy_report)
         """
         if not self.global_policy.enabled or not results:
-            return results, {'applied': False}
+            return results, {"applied": False}
 
         processed = []
         blocked_columns = set()
@@ -519,7 +544,11 @@ class AccessPolicyEngine:
                         processed_row[col_name] = value  # only numbers are scaled
                     else:
                         scaled = value * self.numeric_coefficient
-                        processed_row[col_name] = int(round(scaled)) if isinstance(value, int) else round(scaled, 4)
+                        processed_row[col_name] = (
+                            int(round(scaled))
+                            if isinstance(value, int)
+                            else round(scaled, 4)
+                        )
                     masked_columns.add(col_name)
 
                 else:
@@ -528,10 +557,10 @@ class AccessPolicyEngine:
             processed.append(processed_row)
 
         report = {
-            'applied': True,
-            'rows_processed': len(results),
-            'blocked_columns': list(blocked_columns),
-            'masked_columns': list(masked_columns)
+            "applied": True,
+            "rows_processed": len(results),
+            "blocked_columns": list(blocked_columns),
+            "masked_columns": list(masked_columns),
         }
 
         return processed, report
@@ -556,14 +585,14 @@ class AccessPolicyEngine:
     def export_config(self) -> Dict[str, Any]:
         """Export current configuration as a dictionary"""
         return {
-            'global': self.global_policy.to_dict(),
-            'tables': [p.to_dict() for p in self.table_policies.values()]
+            "global": self.global_policy.to_dict(),
+            "tables": [p.to_dict() for p in self.table_policies.values()],
         }
 
     def export_to_file(self, path: str):
         """Export configuration to a YAML file"""
         config = self.export_config()
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
         logger.info(f"Exported policy config to: {path}")
 
@@ -575,24 +604,21 @@ def create_default_policy_engine() -> AccessPolicyEngine:
 
     # Add default policies for common sensitive columns
     default_sensitive_columns = [
-        ('*', 'ssn', PolicyAction.BLOCK, 'Social Security Number'),
-        ('*', 'social_security*', PolicyAction.BLOCK, 'Social Security Number'),
-        ('*', 'credit_card*', PolicyAction.MASK, 'Credit Card Number'),
-        ('*', 'password*', PolicyAction.BLOCK, 'Password field'),
-        ('*', 'secret*', PolicyAction.BLOCK, 'Secret field'),
-        ('*', 'api_key*', PolicyAction.BLOCK, 'API Key'),
-        ('*', '*token*', PolicyAction.BLOCK, 'Token field'),
+        ("*", "ssn", PolicyAction.BLOCK, "Social Security Number"),
+        ("*", "social_security*", PolicyAction.BLOCK, "Social Security Number"),
+        ("*", "credit_card*", PolicyAction.MASK, "Credit Card Number"),
+        ("*", "password*", PolicyAction.BLOCK, "Password field"),
+        ("*", "secret*", PolicyAction.BLOCK, "Secret field"),
+        ("*", "api_key*", PolicyAction.BLOCK, "API Key"),
+        ("*", "*token*", PolicyAction.BLOCK, "Token field"),
     ]
 
     # Add wildcard table for global column rules
-    wildcard_table = TablePolicy(name='*')
+    wildcard_table = TablePolicy(name="*")
     for table, col, action, reason in default_sensitive_columns:
         wildcard_table.columns[col] = ColumnPolicy(
-            name=col,
-            action=action,
-            reason=reason,
-            sensitivity='critical'
+            name=col, action=action, reason=reason, sensitivity="critical"
         )
-    engine.table_policies['*'] = wildcard_table
+    engine.table_policies["*"] = wildcard_table
 
     return engine

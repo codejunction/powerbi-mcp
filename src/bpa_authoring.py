@@ -11,22 +11,52 @@ Entry points:
     validate_rules(rules)            -> {valid, errors, warnings, rule_count, fixed?}
     audit_rule_sources(model_text)   -> {embedded_rule_count, external_rule_files, ignored_rule_ids, embedded_rule_ids}
 """
+
 import json
 import re
 from typing import Any, Dict, List, Optional, Union
 
 try:
-    from .models import BpaValidateResult, BpaRuleIssue, RuleSourcesResult, LocalRuleFileSummary
+    from .models import (
+        BpaRuleIssue,
+        BpaValidateResult,
+        LocalRuleFileSummary,
+        RuleSourcesResult,
+    )
 except ImportError:
-    from models import BpaValidateResult, BpaRuleIssue, RuleSourcesResult, LocalRuleFileSummary  # type: ignore[no-redef]
+    from models import (
+        BpaRuleIssue,
+        BpaValidateResult,
+        LocalRuleFileSummary,  # type: ignore[no-redef]
+        RuleSourcesResult,
+    )
 
 # TOM object types a rule Scope may target (the public BPA scope vocabulary).
 VALID_SCOPES = {
-    "Model", "Table", "Column", "DataColumn", "CalculatedColumn", "CalculatedTableColumn",
-    "Measure", "Hierarchy", "Level", "Relationship", "Partition", "Perspective", "Culture",
-    "ModelRole", "TablePermission", "KPI", "CalculationGroup", "CalculationItem",
-    "CalculatedTable", "NamedExpression", "Variation", "ProviderDataSource",
-    "StructuredDataSource", "Role",
+    "Model",
+    "Table",
+    "Column",
+    "DataColumn",
+    "CalculatedColumn",
+    "CalculatedTableColumn",
+    "Measure",
+    "Hierarchy",
+    "Level",
+    "Relationship",
+    "Partition",
+    "Perspective",
+    "Culture",
+    "ModelRole",
+    "TablePermission",
+    "KPI",
+    "CalculationGroup",
+    "CalculationItem",
+    "CalculatedTable",
+    "NamedExpression",
+    "Variation",
+    "ProviderDataSource",
+    "StructuredDataSource",
+    "Role",
 }
 VALID_SEVERITIES = {1, 2, 3}  # 1 info, 2 warning, 3 error
 REQUIRED_FIELDS = ("ID", "Name", "Category", "Severity", "Scope", "Expression")
@@ -41,11 +71,15 @@ def _as_rule_list(rules: Union[str, list, dict]) -> List[Dict[str, Any]]:
     if isinstance(rules, dict):
         rules = rules.get("Rules", rules.get("rules", []))
     if not isinstance(rules, list):
-        raise ValueError("BPA rules must be a JSON array (or a {'Rules': [...]} object).")
+        raise ValueError(
+            "BPA rules must be a JSON array (or a {'Rules': [...]} object)."
+        )
     return rules
 
 
-def validate_rules(rules: Union[str, list, dict], fix: bool = False) -> BpaValidateResult:
+def validate_rules(
+    rules: Union[str, list, dict], fix: bool = False
+) -> BpaValidateResult:
     """Validate a BPA rules JSON. With fix=True, also return a cleaned copy (runtime fields
     stripped, null FixExpression dropped)."""
     rule_list = _as_rule_list(rules)
@@ -72,7 +106,11 @@ def validate_rules(rules: Union[str, list, dict], fix: bool = False) -> BpaValid
 
         sev = rule.get("Severity")
         if sev is not None and sev not in VALID_SEVERITIES:
-            err(i, rid, f"Severity {sev!r} is not one of {sorted(VALID_SEVERITIES)} (1=info, 2=warning, 3=error).")
+            err(
+                i,
+                rid,
+                f"Severity {sev!r} is not one of {sorted(VALID_SEVERITIES)} (1=info, 2=warning, 3=error).",
+            )
 
         scope = rule.get("Scope")
         if isinstance(scope, str) and scope.strip():
@@ -84,16 +122,32 @@ def validate_rules(rules: Union[str, list, dict], fix: bool = False) -> BpaValid
         if rid is not None:
             seen_ids[rid] = seen_ids.get(rid, 0) + 1
             if " " in str(rid):
-                warn(i, rid, "Rule ID contains spaces; prefer a hyphen/underscore identifier.")
+                warn(
+                    i,
+                    rid,
+                    "Rule ID contains spaces; prefer a hyphen/underscore identifier.",
+                )
 
         fix_expr = rule.get("FixExpression")
-        if isinstance(fix_expr, str) and re.search(r"\.Delete\s*\(", fix_expr) and sev in (1, 2):
-            warn(i, rid, "FixExpression deletes an object on a non-error rule; destructive auto-fix on a "
-                         "low/medium-severity rule is risky.")
+        if (
+            isinstance(fix_expr, str)
+            and re.search(r"\.Delete\s*\(", fix_expr)
+            and sev in (1, 2)
+        ):
+            warn(
+                i,
+                rid,
+                "FixExpression deletes an object on a non-error rule; destructive auto-fix on a "
+                "low/medium-severity rule is risky.",
+            )
 
         present_runtime = [f for f in RUNTIME_FIELDS if f in rule]
         if present_runtime:
-            warn(i, rid, f"Contains runtime-only field(s) {', '.join(present_runtime)}; strip before committing.")
+            warn(
+                i,
+                rid,
+                f"Contains runtime-only field(s) {', '.join(present_runtime)}; strip before committing.",
+            )
 
         if fix:
             c = {k: v for k, v in rule.items() if k not in RUNTIME_FIELDS}
@@ -103,7 +157,13 @@ def validate_rules(rules: Union[str, list, dict], fix: bool = False) -> BpaValid
 
     for rid, count in seen_ids.items():
         if count > 1:
-            errors.append(BpaRuleIssue(index=None, rule_id=rid, message=f"Duplicate rule ID '{rid}' ({count} times)."))
+            errors.append(
+                BpaRuleIssue(
+                    index=None,
+                    rule_id=rid,
+                    message=f"Duplicate rule ID '{rid}' ({count} times).",
+                )
+            )
 
     return BpaValidateResult(
         valid=len(errors) == 0,
@@ -114,8 +174,9 @@ def validate_rules(rules: Union[str, list, dict], fix: bool = False) -> BpaValid
     )
 
 
-def audit_rule_sources(model_text: Optional[str] = None,
-                       local_rule_files: Optional[Dict[str, str]] = None) -> RuleSourcesResult:
+def audit_rule_sources(
+    model_text: Optional[str] = None, local_rule_files: Optional[Dict[str, str]] = None
+) -> RuleSourcesResult:
     """Discover BPA rules associated with a model. Parses the model's TMDL/BIM text for embedded
     rules, external rule-file URLs, and ignored rule IDs. local_rule_files maps a label to JSON
     text of a user/machine BPARules.json so its rule IDs can be merged in."""
@@ -130,7 +191,7 @@ def audit_rule_sources(model_text: Optional[str] = None,
         # whole balanced JSON value rather than just the first line.
         m = re.search(rf"annotation\s+{re.escape(name)}\s*=\s*", text)
         if m:
-            rest = text[m.end():].lstrip()
+            rest = text[m.end() :].lstrip()
             if rest[:1] in "[{":
                 try:
                     val, _ = json.JSONDecoder().raw_decode(rest)
@@ -139,7 +200,10 @@ def audit_rule_sources(model_text: Optional[str] = None,
                     pass
             return rest.splitlines()[0].strip() if rest else None
         # BIM JSON: {"name": "NAME", "value": "..."}
-        m = re.search(rf'"name"\s*:\s*"{re.escape(name)}"\s*,\s*"value"\s*:\s*("(?:[^"\\]|\\.)*")', text)
+        m = re.search(
+            rf'"name"\s*:\s*"{re.escape(name)}"\s*,\s*"value"\s*:\s*("(?:[^"\\]|\\.)*")',
+            text,
+        )
         if m:
             try:
                 return json.loads(m.group(1))
@@ -176,7 +240,11 @@ def audit_rule_sources(model_text: Optional[str] = None,
     for label, content in (local_rule_files or {}).items():
         try:
             res = validate_rules(content)
-            local_summary.append(LocalRuleFileSummary(source=label, rule_count=res.rule_count, valid=res.valid))
+            local_summary.append(
+                LocalRuleFileSummary(
+                    source=label, rule_count=res.rule_count, valid=res.valid
+                )
+            )
         except Exception as e:
             local_summary.append(LocalRuleFileSummary(source=label, error=str(e)))
 

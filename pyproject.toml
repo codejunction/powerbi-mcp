@@ -13,3 +13,11 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.15.0",
 ]
+
+[dependency-groups]
+dev = [
+    "black>=26.5.1",
+    "isort>=8.0.1",
+    "pylint>=4.0.7",
+    "taskipy>=1.14.1",
+]

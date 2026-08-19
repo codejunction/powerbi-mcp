@@ -20,7 +20,9 @@ TESTS = sorted((ROOT / "tests").glob("test_*.py"))
 def main() -> int:
     failed = []
     for t in TESTS:
-        result = subprocess.run([sys.executable, str(t)], capture_output=True, text=True)
+        result = subprocess.run(
+            [sys.executable, str(t)], capture_output=True, text=True
+        )
         ok = result.returncode == 0
         print(f"  [{'PASS' if ok else 'FAIL'}] {t.name}")
         if not ok:

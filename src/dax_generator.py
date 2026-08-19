@@ -15,8 +15,9 @@ Entry point:
     generate_suite(kind, **params) -> List[MeasureDefinition]
 Kinds: "time_intelligence", "ratios", "ranking", "column_stats".
 """
+
 import re
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 try:
     from .models import MeasureDefinition
@@ -24,6 +25,7 @@ except ImportError:
     from models import MeasureDefinition  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------- reference helpers
+
 
 def _bracket(prop: str) -> str:
     """Wrap a column/measure name in brackets, escaping ']' as ']]' (the DAX rule)."""
@@ -65,7 +67,7 @@ def column_ref(ref: str) -> str:
         end = s.find("'", 1)
         if end != -1:
             table = s[1:end]
-            col = s[end + 1:].lstrip(".")
+            col = s[end + 1 :].lstrip(".")
             return f"'{table}'" + _bracket(col)
     table, _, col = s.partition(".")
     return f"'{table.strip()}'" + _bracket(col.strip())
@@ -79,8 +81,13 @@ def split_column_ref(ref: str):
 
 
 def _m(name, expression, format_string, folder, description) -> MeasureDefinition:
-    return MeasureDefinition(name=name, expression=expression, format_string=format_string,
-                             display_folder=folder, description=description)
+    return MeasureDefinition(
+        name=name,
+        expression=expression,
+        format_string=format_string,
+        display_folder=folder,
+        description=description,
+    )
 
 
 # ---------------------------------------------------------------- time intelligence
@@ -114,17 +121,21 @@ TIME_INTELLIGENCE_VARIANTS: Dict[str, Dict[str, str]] = {
     },
     "yoy": {
         "suffix": "YoY",
-        "expr": ("VAR __py = CALCULATE({b}, SAMEPERIODLASTYEAR({d}))\n"
-                 "RETURN\n"
-                 "    IF(NOT ISBLANK(__py), {b} - __py)"),
+        "expr": (
+            "VAR __py = CALCULATE({b}, SAMEPERIODLASTYEAR({d}))\n"
+            "RETURN\n"
+            "    IF(NOT ISBLANK(__py), {b} - __py)"
+        ),
         "format": "inherit",
         "desc": "Absolute change of {base} versus the same period last year (blank when no prior-year data).",
     },
     "yoy_pct": {
         "suffix": "YoY %",
-        "expr": ("VAR __py = CALCULATE({b}, SAMEPERIODLASTYEAR({d}))\n"
-                 "RETURN\n"
-                 "    DIVIDE({b} - __py, __py)"),
+        "expr": (
+            "VAR __py = CALCULATE({b}, SAMEPERIODLASTYEAR({d}))\n"
+            "RETURN\n"
+            "    DIVIDE({b} - __py, __py)"
+        ),
         "format": "+0.0%;-0.0%;0.0%",
         "desc": "Percent change of {base} versus the same period last year.",
     },
@@ -136,17 +147,21 @@ TIME_INTELLIGENCE_VARIANTS: Dict[str, Dict[str, str]] = {
     },
     "mom": {
         "suffix": "MoM",
-        "expr": ("VAR __pm = CALCULATE({b}, DATEADD({d}, -1, MONTH))\n"
-                 "RETURN\n"
-                 "    IF(NOT ISBLANK(__pm), {b} - __pm)"),
+        "expr": (
+            "VAR __pm = CALCULATE({b}, DATEADD({d}, -1, MONTH))\n"
+            "RETURN\n"
+            "    IF(NOT ISBLANK(__pm), {b} - __pm)"
+        ),
         "format": "inherit",
         "desc": "Absolute change of {base} versus the previous month.",
     },
     "mom_pct": {
         "suffix": "MoM %",
-        "expr": ("VAR __pm = CALCULATE({b}, DATEADD({d}, -1, MONTH))\n"
-                 "RETURN\n"
-                 "    DIVIDE({b} - __pm, __pm)"),
+        "expr": (
+            "VAR __pm = CALCULATE({b}, DATEADD({d}, -1, MONTH))\n"
+            "RETURN\n"
+            "    DIVIDE({b} - __pm, __pm)"
+        ),
         "format": "+0.0%;-0.0%;0.0%",
         "desc": "Percent change of {base} versus the previous month.",
     },
@@ -164,13 +179,25 @@ TIME_INTELLIGENCE_VARIANTS: Dict[str, Dict[str, str]] = {
     },
 }
 
-DEFAULT_TI_VARIANTS = ["ytd", "qtd", "mtd", "py", "yoy", "yoy_pct", "mom_pct", "rolling_12m"]
+DEFAULT_TI_VARIANTS = [
+    "ytd",
+    "qtd",
+    "mtd",
+    "py",
+    "yoy",
+    "yoy_pct",
+    "mom_pct",
+    "rolling_12m",
+]
 
 
-def generate_time_intelligence(base_measure: str, date_column: str,
-                               variants: Optional[List[str]] = None,
-                               display_folder: Optional[str] = None,
-                               base_format: Optional[str] = None) -> List[MeasureDefinition]:
+def generate_time_intelligence(
+    base_measure: str,
+    date_column: str,
+    variants: Optional[List[str]] = None,
+    display_folder: Optional[str] = None,
+    base_format: Optional[str] = None,
+) -> List[MeasureDefinition]:
     """Expand a base measure into time-intelligence measures over a date column.
 
     base_format is applied where a variant inherits the base's format (pass the base
@@ -181,27 +208,40 @@ def generate_time_intelligence(base_measure: str, date_column: str,
     d = column_ref(date_column)
     folder = display_folder or f"Time Intelligence\\{base}"
     out: List[MeasureDefinition] = []
-    unknown = [v for v in (variants or DEFAULT_TI_VARIANTS) if v not in TIME_INTELLIGENCE_VARIANTS]
+    unknown = [
+        v
+        for v in (variants or DEFAULT_TI_VARIANTS)
+        if v not in TIME_INTELLIGENCE_VARIANTS
+    ]
     if unknown:
-        raise ValueError(f"Unknown time-intelligence variant(s): {', '.join(unknown)}. "
-                         f"Valid: {', '.join(sorted(TIME_INTELLIGENCE_VARIANTS))}")
-    for v in (variants or DEFAULT_TI_VARIANTS):
+        raise ValueError(
+            f"Unknown time-intelligence variant(s): {', '.join(unknown)}. "
+            f"Valid: {', '.join(sorted(TIME_INTELLIGENCE_VARIANTS))}"
+        )
+    for v in variants or DEFAULT_TI_VARIANTS:
         t = TIME_INTELLIGENCE_VARIANTS[v]
         fmt = base_format if t["format"] == "inherit" else t["format"]
-        out.append(_m(
-            f"{base} {t['suffix']}",
-            t["expr"].format(b=b, d=d, base=base),
-            fmt, folder,
-            t["desc"].format(base=base),
-        ))
+        out.append(
+            _m(
+                f"{base} {t['suffix']}",
+                t["expr"].format(b=b, d=d, base=base),
+                fmt,
+                folder,
+                t["desc"].format(base=base),
+            )
+        )
     return out
 
 
 # ---------------------------------------------------------------- ratios / ranking / stats
 
-def generate_ratios(base_measure: str, dimension_columns: List[str],
-                    display_folder: Optional[str] = None,
-                    include_all_selected: bool = True) -> List[MeasureDefinition]:
+
+def generate_ratios(
+    base_measure: str,
+    dimension_columns: List[str],
+    display_folder: Optional[str] = None,
+    include_all_selected: bool = True,
+) -> List[MeasureDefinition]:
     """Share-of-total measures: base as a % of the total over each dimension column
     (ALL = grand total ignoring that filter; ALLSELECTED = % of the visible total)."""
     b = measure_ref(base_measure)
@@ -211,24 +251,33 @@ def generate_ratios(base_measure: str, dimension_columns: List[str],
     for dim in dimension_columns:
         d = column_ref(dim)
         _, col = split_column_ref(dim)
-        out.append(_m(
-            f"{base} % of Total {col}",
-            f"DIVIDE({b}, CALCULATE({b}, ALL({d})))",
-            "0.0%", folder,
-            f"{base} as a share of the grand total across all {col} values.",
-        ))
+        out.append(
+            _m(
+                f"{base} % of Total {col}",
+                f"DIVIDE({b}, CALCULATE({b}, ALL({d})))",
+                "0.0%",
+                folder,
+                f"{base} as a share of the grand total across all {col} values.",
+            )
+        )
         if include_all_selected:
-            out.append(_m(
-                f"{base} % of Selected {col}",
-                f"DIVIDE({b}, CALCULATE({b}, ALLSELECTED({d})))",
-                "0.0%", folder,
-                f"{base} as a share of the total across the currently selected {col} values.",
-            ))
+            out.append(
+                _m(
+                    f"{base} % of Selected {col}",
+                    f"DIVIDE({b}, CALCULATE({b}, ALLSELECTED({d})))",
+                    "0.0%",
+                    folder,
+                    f"{base} as a share of the total across the currently selected {col} values.",
+                )
+            )
     return out
 
 
-def generate_ranking(base_measure: str, dimension_columns: List[str],
-                     display_folder: Optional[str] = None) -> List[MeasureDefinition]:
+def generate_ranking(
+    base_measure: str,
+    dimension_columns: List[str],
+    display_folder: Optional[str] = None,
+) -> List[MeasureDefinition]:
     """Rank of the current dimension member by the base measure (dense, descending)."""
     b = measure_ref(base_measure)
     base = bare_name(base_measure)
@@ -237,18 +286,24 @@ def generate_ranking(base_measure: str, dimension_columns: List[str],
     for dim in dimension_columns:
         d = column_ref(dim)
         _, col = split_column_ref(dim)
-        out.append(_m(
-            f"{base} Rank by {col}",
-            (f"IF(\n    HASONEVALUE({d}),\n"
-             f"    RANKX(ALL({d}), {b}, , DESC, DENSE)\n)"),
-            "0", folder,
-            f"Dense descending rank of the current {col} by {base} (blank at totals).",
-        ))
+        out.append(
+            _m(
+                f"{base} Rank by {col}",
+                (
+                    f"IF(\n    HASONEVALUE({d}),\n"
+                    f"    RANKX(ALL({d}), {b}, , DESC, DENSE)\n)"
+                ),
+                "0",
+                folder,
+                f"Dense descending rank of the current {col} by {base} (blank at totals).",
+            )
+        )
     return out
 
 
-def generate_column_stats(column: str, display_folder: Optional[str] = None,
-                          stats: Optional[List[str]] = None) -> List[MeasureDefinition]:
+def generate_column_stats(
+    column: str, display_folder: Optional[str] = None, stats: Optional[List[str]] = None
+) -> List[MeasureDefinition]:
     """Basic statistical measures over a numeric column: sum/avg/min/max/median/distinct."""
     d = column_ref(column)
     _, col = split_column_ref(column)
@@ -259,20 +314,35 @@ def generate_column_stats(column: str, display_folder: Optional[str] = None,
         "min": (f"Min {col}", f"MIN({d})", "Minimum value of {col}."),
         "max": (f"Max {col}", f"MAX({d})", "Maximum value of {col}."),
         "median": (f"Median {col}", f"MEDIAN({d})", "Median value of {col}."),
-        "distinct": (f"Distinct {col}", f"DISTINCTCOUNT({d})", "Count of distinct {col} values."),
+        "distinct": (
+            f"Distinct {col}",
+            f"DISTINCTCOUNT({d})",
+            "Count of distinct {col} values.",
+        ),
     }
     chosen = stats or ["sum", "avg", "min", "max", "median", "distinct"]
     unknown = [s for s in chosen if s not in templates]
     if unknown:
-        raise ValueError(f"Unknown stat(s): {', '.join(unknown)}. Valid: {', '.join(sorted(templates))}")
+        raise ValueError(
+            f"Unknown stat(s): {', '.join(unknown)}. Valid: {', '.join(sorted(templates))}"
+        )
     out: List[MeasureDefinition] = []
     for s in chosen:
         name, expr, desc = templates[s]
-        out.append(_m(name, expr, "0" if s == "distinct" else None, folder, desc.format(col=col)))
+        out.append(
+            _m(
+                name,
+                expr,
+                "0" if s == "distinct" else None,
+                folder,
+                desc.format(col=col),
+            )
+        )
     return out
 
 
 # ---------------------------------------------------------------- dispatcher
+
 
 def generate_suite(kind: str, **params) -> List[MeasureDefinition]:
     """Dispatch to a generator by kind."""
@@ -285,5 +355,7 @@ def generate_suite(kind: str, **params) -> List[MeasureDefinition]:
         return generate_ranking(**params)
     if kind in ("column_stats", "stats"):
         return generate_column_stats(**params)
-    raise ValueError(f"Unknown suite kind '{kind}'. "
-                     "Use time_intelligence | ratios | ranking | column_stats.")
+    raise ValueError(
+        f"Unknown suite kind '{kind}'. "
+        "Use time_intelligence | ratios | ranking | column_stats."
+    )

@@ -2,11 +2,13 @@
 Power BI REST API Connector
 For listing workspaces and datasets from Power BI Service
 """
+
 import logging
 import time
 from typing import Any, Dict, List, Optional
-import requests
+
 import msal
+import requests
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -23,7 +25,13 @@ class PowerBIRestConnector:
     DEFAULT_TOKEN_TTL_MINUTES = 20
     AUTH_RETRY_STATUS_CODES = {401, 403}
 
-    def __init__(self, tenant_id: str, client_id: str, client_secret: str, token_ttl_minutes: int = DEFAULT_TOKEN_TTL_MINUTES):
+    def __init__(
+        self,
+        tenant_id: str,
+        client_id: str,
+        client_secret: str,
+        token_ttl_minutes: int = DEFAULT_TOKEN_TTL_MINUTES,
+    ):
         """Initialize connector with Azure AD credentials"""
         self.tenant_id = tenant_id
         self.client_id = client_id
@@ -106,7 +114,10 @@ class PowerBIRestConnector:
         if response.status_code not in self.AUTH_RETRY_STATUS_CODES:
             return response
 
-        logger.warning("Power BI request returned %s; refreshing access token and retrying once", response.status_code)
+        logger.warning(
+            "Power BI request returned %s; refreshing access token and retrying once",
+            response.status_code,
+        )
         if not self._ensure_authenticated(force=True):
             return response
 
@@ -166,7 +177,9 @@ class PowerBIRestConnector:
                     "workspace_id": workspace_id,
                     "configured_by": ds.get("configuredBy", "Unknown"),
                     "is_refreshable": ds.get("isRefreshable", False),
-                    "is_on_prem_gateway_required": ds.get("isOnPremGatewayRequired", False),
+                    "is_on_prem_gateway_required": ds.get(
+                        "isOnPremGatewayRequired", False
+                    ),
                 }
                 for ds in datasets
             ]
@@ -175,7 +188,6 @@ class PowerBIRestConnector:
             logger.error(f"Failed to list datasets: {str(e)}")
             return []
 
-
     def get_dataset(self, workspace_id: str, dataset_id: str) -> Dict[str, Any]:
         """Get dataset metadata from the Power BI REST API."""
         url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}"
@@ -183,7 +195,9 @@ class PowerBIRestConnector:
         response.raise_for_status()
         return response.json()
 
-    def execute_dax_query(self, workspace_id: str, dataset_id: str, dax_query: str) -> List[Dict[str, Any]]:
+    def execute_dax_query(
+        self, workspace_id: str, dataset_id: str, dax_query: str
+    ) -> List[Dict[str, Any]]:
         """Execute a read-only DAX query using the Power BI REST Execute Queries API."""
         url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/executeQueries"
         payload = {
@@ -204,7 +218,9 @@ class PowerBIRestConnector:
     def list_tables(self, workspace_id: str, dataset_id: str) -> List[Dict[str, Any]]:
         """List tables in a dataset using INFO.VIEW.TABLES."""
         try:
-            tables = self.execute_dax_query(workspace_id, dataset_id, "EVALUATE INFO.VIEW.TABLES()")
+            tables = self.execute_dax_query(
+                workspace_id, dataset_id, "EVALUATE INFO.VIEW.TABLES()"
+            )
             logger.info(f"Found {len(tables)} table(s)")
 
             return [
@@ -220,11 +236,13 @@ class PowerBIRestConnector:
             logger.error(f"Failed to list tables: {str(e)}")
             return []
 
-    def list_columns(self, workspace_id: str, dataset_id: str, table_name: str) -> List[Dict[str, Any]]:
+    def list_columns(
+        self, workspace_id: str, dataset_id: str, table_name: str
+    ) -> List[Dict[str, Any]]:
         """List columns in a table using INFO.VIEW.COLUMNS."""
         try:
             # Filter columns for the specific table
-            dax = f"EVALUATE FILTER(INFO.VIEW.COLUMNS(), [Table] = \"{table_name}\")"
+            dax = f'EVALUATE FILTER(INFO.VIEW.COLUMNS(), [Table] = "{table_name}")'
             columns = self.execute_dax_query(workspace_id, dataset_id, dax)
             logger.info(f"Found {len(columns)} column(s) in table '{table_name}'")
 
@@ -242,7 +260,9 @@ class PowerBIRestConnector:
             logger.error(f"Failed to list columns: {str(e)}")
             return []
 
-    def execute_dax(self, workspace_id: str, dataset_id: str, dax_query: str) -> List[Dict[str, Any]]:
+    def execute_dax(
+        self, workspace_id: str, dataset_id: str, dax_query: str
+    ) -> List[Dict[str, Any]]:
         """Execute a DAX query and return results."""
         try:
             rows = self.execute_dax_query(workspace_id, dataset_id, dax_query)
@@ -253,10 +273,18 @@ class PowerBIRestConnector:
             logger.error(f"Failed to execute DAX: {str(e)}")
             return []
 
-    def get_semantic_model_metadata(self, workspace_id: str, dataset_id: str) -> Dict[str, Any]:
+    def get_semantic_model_metadata(
+        self, workspace_id: str, dataset_id: str
+    ) -> Dict[str, Any]:
         """Return semantic model metadata available through REST and Execute Queries."""
         dataset = self.get_dataset(workspace_id, dataset_id)
-        metadata = {"dataset": dataset, "tables": [], "columns": [], "measures": [], "relationships": []}
+        metadata = {
+            "dataset": dataset,
+            "tables": [],
+            "columns": [],
+            "measures": [],
+            "relationships": [],
+        }
         queries = {
             "tables": "EVALUATE INFO.VIEW.TABLES()",
             "columns": "EVALUATE INFO.VIEW.COLUMNS()",
@@ -284,10 +312,16 @@ class PowerBIRestConnector:
         datasets = self.list_datasets(ws["id"])
         ds = next((d for d in datasets if d["name"] == dataset_name), None)
         if not ds:
-            return None, None, f"Dataset '{dataset_name}' not found in workspace '{workspace_name}'"
+            return (
+                None,
+                None,
+                f"Dataset '{dataset_name}' not found in workspace '{workspace_name}'",
+            )
         return ws["id"], ds["id"], None
 
-    def get_refresh_history(self, workspace_id: str, dataset_id: str, top: int = 20) -> List[Dict[str, Any]]:
+    def get_refresh_history(
+        self, workspace_id: str, dataset_id: str, top: int = 20
+    ) -> List[Dict[str, Any]]:
         """Get recent refresh history for a dataset (most recent first).
 
         Each entry: requestId, refreshType, startTime, endTime, status
@@ -298,15 +332,18 @@ class PowerBIRestConnector:
         response.raise_for_status()
         return response.json().get("value", [])
 
-    def get_datasources(self, workspace_id: str, dataset_id: str) -> List[Dict[str, Any]]:
+    def get_datasources(
+        self, workspace_id: str, dataset_id: str
+    ) -> List[Dict[str, Any]]:
         """Get the data sources bound to a dataset (for gateway/source diagnostics)."""
         url = f"{self.BASE_URL}/groups/{workspace_id}/datasets/{dataset_id}/datasources"
         response = self._request("GET", url, timeout=30)
         response.raise_for_status()
         return response.json().get("value", [])
 
-    def trigger_refresh(self, workspace_id: str, dataset_id: str,
-                        body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def trigger_refresh(
+        self, workspace_id: str, dataset_id: str, body: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Trigger a dataset refresh. With no body, sends a standard refresh
         ({"notifyOption": "NoNotification"}) that works on Pro. A non-empty body uses the
         enhanced refresh API (Premium/PPU/Fabric) and must NOT include notifyOption.
@@ -317,14 +354,20 @@ class PowerBIRestConnector:
         payload = body if body else {"notifyOption": "NoNotification"}
         try:
             response = self._request("POST", url, json=payload, timeout=30)
-            accepted = response.status_code in (200, 202)  # async contract is 202 Accepted
+            accepted = response.status_code in (
+                200,
+                202,
+            )  # async contract is 202 Accepted
             location = response.headers.get("Location")
             return {
                 "accepted": accepted,
                 "status_code": response.status_code,
-                "request_id": response.headers.get("x-ms-request-id") or (location.rstrip("/").split("/")[-1] if location else None),
+                "request_id": response.headers.get("x-ms-request-id")
+                or (location.rstrip("/").split("/")[-1] if location else None),
                 "location": location,
-                "message": "Refresh requested" if accepted else (response.text or "")[:500],
+                "message": (
+                    "Refresh requested" if accepted else (response.text or "")[:500]
+                ),
             }
         except Exception as e:
             return {"accepted": False, "message": str(e)}
@@ -340,22 +383,29 @@ class PowerBIRestConnector:
         response.raise_for_status()
         return response.json().get("value", [])
 
-    def admin_post_workspace_info(self, workspace_ids: List[str], lineage: bool = True) -> Dict[str, Any]:
+    def admin_post_workspace_info(
+        self, workspace_ids: List[str], lineage: bool = True
+    ) -> Dict[str, Any]:
         """Start a metadata scan for up to 100 workspaces. POST /admin/workspaces/getInfo.
         Returns {id: scanId, status,...}."""
         # datasourceDetails=false: governance summary uses roles/labels/lineage only, not
         # datasource instances - keeps the scan payload small. lineage gives report->dataset links.
-        url = (f"{self.BASE_URL}/admin/workspaces/getInfo"
-               f"?lineage={'true' if lineage else 'false'}&datasourceDetails=false"
-               f"&datasetSchema=false&datasetExpressions=false&getArtifactUsers=false")
-        response = self._request("POST", url, json={"workspaces": workspace_ids[:100]}, timeout=30)
+        url = (
+            f"{self.BASE_URL}/admin/workspaces/getInfo"
+            f"?lineage={'true' if lineage else 'false'}&datasourceDetails=false"
+            f"&datasetSchema=false&datasetExpressions=false&getArtifactUsers=false"
+        )
+        response = self._request(
+            "POST", url, json={"workspaces": workspace_ids[:100]}, timeout=30
+        )
         response.raise_for_status()
         return response.json()
 
     def admin_get_scan_status(self, scan_id: str) -> Dict[str, Any]:
         """GET /admin/workspaces/scanStatus/{scanId}. status is a string (not a closed enum);
         known values include NotStarted, Running, Succeeded, Failed - match case-insensitively
-        and treat anything else as still in progress. On Failed, inspect the .error object."""
+        and treat anything else as still in progress. On Failed, inspect the .error object.
+        """
         url = f"{self.BASE_URL}/admin/workspaces/scanStatus/{scan_id}"
         response = self._request("GET", url, timeout=30)
         response.raise_for_status()
@@ -368,16 +418,21 @@ class PowerBIRestConnector:
         response.raise_for_status()
         return response.json()
 
-    def admin_get_activity_events(self, start_dt_iso: str, end_dt_iso: str,
-                                  filter_expr: Optional[str] = None) -> List[Dict[str, Any]]:
+    def admin_get_activity_events(
+        self, start_dt_iso: str, end_dt_iso: str, filter_expr: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Get audit Activity Events for a window (same UTC day, <=28 days old) via
         GET /admin/activityevents. Datetimes are single-quoted UTC ISO. Pages by following
         continuationUri verbatim while continuationToken is non-null (a page may be empty but
-        still have a token). Honors 429 Retry-After. Returns the accumulated entities."""
+        still have a token). Honors 429 Retry-After. Returns the accumulated entities.
+        """
         import time as _time
         from urllib.parse import quote
-        url = (f"{self.BASE_URL}/admin/activityevents"
-               f"?startDateTime='{start_dt_iso}'&endDateTime='{end_dt_iso}'")
+
+        url = (
+            f"{self.BASE_URL}/admin/activityevents"
+            f"?startDateTime='{start_dt_iso}'&endDateTime='{end_dt_iso}'"
+        )
         if filter_expr:
             url += f"&$filter={quote(filter_expr)}"
         entities: List[Dict[str, Any]] = []
@@ -396,8 +451,9 @@ class PowerBIRestConnector:
             url = cont_uri  # complete, correctly-encoded URL - follow verbatim, no re-encoding
         return entities
 
-    def admin_get_activity_events_for_day(self, date: str,
-                                          filter_expr: Optional[str] = None) -> List[Dict[str, Any]]:
+    def admin_get_activity_events_for_day(
+        self, date: str, filter_expr: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Pull a full UTC day of activity events by looping 24 one-hour windows
         (the raw API allows at most ~1 hour per request). date = 'YYYY-MM-DD'."""
         events: List[Dict[str, Any]] = []

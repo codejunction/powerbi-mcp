@@ -2,17 +2,18 @@
 Query Audit Logging Module
 Logs all queries with metadata for compliance and security monitoring
 """
+
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import threading
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from enum import Enum
-import hashlib
-import hmac
 
 try:
     from ..models import AuditIntegrityResult, AuditSessionSummary
@@ -41,6 +42,7 @@ def _scrub_secrets(text: Optional[str]) -> Optional[str]:
 
 class AuditEventType(Enum):
     """Types of auditable events"""
+
     QUERY_EXECUTE = "query_execute"
     QUERY_SUCCESS = "query_success"
     QUERY_FAILURE = "query_failure"
@@ -53,6 +55,7 @@ class AuditEventType(Enum):
 
 class AuditSeverity(Enum):
     """Severity levels for audit events"""
+
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
@@ -87,7 +90,7 @@ class AuditLogger:
         max_file_size_mb: int = 10,
         backup_count: int = 5,
         include_query_text: bool = True,
-        redact_sensitive: bool = True
+        redact_sensitive: bool = True,
     ):
         """
         Initialize the audit logger
@@ -100,7 +103,9 @@ class AuditLogger:
             include_query_text: Whether to include full query text
             redact_sensitive: Redact potentially sensitive values in logs
         """
-        self.log_dir = Path(log_dir) if log_dir else Path(__file__).parent.parent.parent / "logs"
+        self.log_dir = (
+            Path(log_dir) if log_dir else Path(__file__).parent.parent.parent / "logs"
+        )
         self.log_file = self.log_dir / log_file
         self.max_file_size = max_file_size_mb * 1024 * 1024
         self.backup_count = backup_count
@@ -141,7 +146,7 @@ class AuditLogger:
             return None
         last = None
         try:
-            with open(self.log_file, 'r', encoding='utf-8') as f:
+            with open(self.log_file, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -159,21 +164,29 @@ class AuditLogger:
         and insertions/deletions (linkage break). Only the current (un-rotated) file is checked.
         """
         if not self.log_file.exists():
-            return AuditIntegrityResult(valid=True, checked=0, message="No audit log file yet.")
+            return AuditIntegrityResult(
+                valid=True, checked=0, message="No audit log file yet."
+            )
         with self._lock:
             try:
-                with open(self.log_file, 'r', encoding='utf-8') as f:
+                with open(self.log_file, "r", encoding="utf-8") as f:
                     raw = [(i, ln.strip()) for i, ln in enumerate(f, 1) if ln.strip()]
             except Exception as e:
-                return AuditIntegrityResult(valid=False, checked=0, message=f"Verification error: {e}")
+                return AuditIntegrityResult(
+                    valid=False, checked=0, message=f"Verification error: {e}"
+                )
 
         events = []
         for i, ln in raw:
             try:
                 events.append((i, json.loads(ln)))
             except Exception:
-                return AuditIntegrityResult(valid=False, checked=len(events), broken_line=i,
-                                            message=f"Line {i} is not valid JSON (corrupted).")
+                return AuditIntegrityResult(
+                    valid=False,
+                    checked=len(events),
+                    broken_line=i,
+                    message=f"Line {i} is not valid JSON (corrupted).",
+                )
 
         # If ANY entry carries a hash, the file is a chained log and EVERY entry must carry a
         # valid hash. This closes the bypass where stripping a single entry's hash (even the
@@ -185,20 +198,38 @@ class AuditLogger:
             stored = ev.get("entry_hash")
             if stored is None:
                 if chain_active:
-                    return AuditIntegrityResult(valid=False, checked=checked, broken_line=i,
-                                                message=f"Line {i} is missing entry_hash (tampering: stripped from a chained log).")
+                    return AuditIntegrityResult(
+                        valid=False,
+                        checked=checked,
+                        broken_line=i,
+                        message=f"Line {i} is missing entry_hash (tampering: stripped from a chained log).",
+                    )
                 checked += 1  # genuine legacy file: no hashes anywhere
                 continue
-            recomputed = self._hash_event({k: v for k, v in ev.items() if k != "entry_hash"})
+            recomputed = self._hash_event(
+                {k: v for k, v in ev.items() if k != "entry_hash"}
+            )
             if recomputed != stored:
-                return AuditIntegrityResult(valid=False, checked=checked, broken_line=i,
-                                            message=f"Line {i} entry_hash mismatch - the entry was modified.")
+                return AuditIntegrityResult(
+                    valid=False,
+                    checked=checked,
+                    broken_line=i,
+                    message=f"Line {i} entry_hash mismatch - the entry was modified.",
+                )
             if prev_entry_hash is not None and ev.get("prev_hash") != prev_entry_hash:
-                return AuditIntegrityResult(valid=False, checked=checked, broken_line=i,
-                                            message=f"Line {i} chain linkage broken - an entry was inserted or deleted.")
+                return AuditIntegrityResult(
+                    valid=False,
+                    checked=checked,
+                    broken_line=i,
+                    message=f"Line {i} chain linkage broken - an entry was inserted or deleted.",
+                )
             prev_entry_hash = stored
             checked += 1
-        return AuditIntegrityResult(valid=True, checked=checked, message=f"Chain intact across {checked} entr(ies).")
+        return AuditIntegrityResult(
+            valid=True,
+            checked=checked,
+            message=f"Chain intact across {checked} entr(ies).",
+        )
 
     def _generate_session_id(self) -> str:
         """Generate a unique session ID"""
@@ -208,7 +239,7 @@ class AuditLogger:
     def _generate_query_fingerprint(self, query: str) -> str:
         """Generate a fingerprint for query deduplication"""
         # Normalize whitespace and case
-        normalized = ' '.join(query.lower().split())
+        normalized = " ".join(query.lower().split())
         return hashlib.sha256(normalized.encode()).hexdigest()[:12]
 
     def _rotate_if_needed(self):
@@ -216,8 +247,12 @@ class AuditLogger:
         if self.log_file.exists() and self.log_file.stat().st_size > self.max_file_size:
             # Rotate existing backups
             for i in range(self.backup_count - 1, 0, -1):
-                old_backup = self.log_dir / f"{self.log_file.stem}.{i}{self.log_file.suffix}"
-                new_backup = self.log_dir / f"{self.log_file.stem}.{i + 1}{self.log_file.suffix}"
+                old_backup = (
+                    self.log_dir / f"{self.log_file.stem}.{i}{self.log_file.suffix}"
+                )
+                new_backup = (
+                    self.log_dir / f"{self.log_file.stem}.{i + 1}{self.log_file.suffix}"
+                )
                 if old_backup.exists():
                     old_backup.rename(new_backup)
 
@@ -247,8 +282,8 @@ class AuditLogger:
                 chained = dict(event)
                 chained["prev_hash"] = self._last_hash
                 chained["entry_hash"] = self._hash_event(chained)
-                with open(self.log_file, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps(chained, default=str) + '\n')
+                with open(self.log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(chained, default=str) + "\n")
                 self._last_hash = chained["entry_hash"]
             except Exception as e:
                 logger.error(f"Failed to write audit log: {e}")
@@ -259,7 +294,7 @@ class AuditLogger:
         severity: AuditSeverity = AuditSeverity.INFO,
         message: str = "",
         details: Optional[Dict[str, Any]] = None,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Log a generic audit event
@@ -275,13 +310,13 @@ class AuditLogger:
             The logged event record
         """
         event = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'session_id': self._session_id,
-            'event_type': event_type.value,
-            'severity': severity.value,
-            'message': message,
-            'details': details or {},
-            **kwargs
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": self._session_id,
+            "event_type": event_type.value,
+            "severity": severity.value,
+            "message": message,
+            "details": details or {},
+            **kwargs,
         }
 
         self._write_log(event)
@@ -303,7 +338,7 @@ class AuditLogger:
         pii_types: Optional[List[str]] = None,
         pii_count: int = 0,
         policy_applied: Optional[str] = None,
-        user_context: Optional[Dict[str, Any]] = None
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Log a DAX query execution
@@ -330,7 +365,9 @@ class AuditLogger:
         """
         self._query_count += 1
 
-        event_type = AuditEventType.QUERY_SUCCESS if success else AuditEventType.QUERY_FAILURE
+        event_type = (
+            AuditEventType.QUERY_SUCCESS if success else AuditEventType.QUERY_FAILURE
+        )
         severity = AuditSeverity.INFO if success else AuditSeverity.ERROR
 
         # Elevate severity if PII was detected
@@ -342,37 +379,37 @@ class AuditLogger:
         safe_error = _scrub_secrets(error_message)
 
         event = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'session_id': self._session_id,
-            'query_id': f"{self._session_id}_{self._query_count}",
-            'query_number': self._query_count,
-            'event_type': event_type.value,
-            'severity': severity.value,
-            'source': source,
-            'model': model_name,
-            'port': port,
-            'query': {
-                'text': query_text,
-                'fingerprint': query_fingerprint,
-                'length': len(query)
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": self._session_id,
+            "query_id": f"{self._session_id}_{self._query_count}",
+            "query_number": self._query_count,
+            "event_type": event_type.value,
+            "severity": severity.value,
+            "source": source,
+            "model": model_name,
+            "port": port,
+            "query": {
+                "text": query_text,
+                "fingerprint": query_fingerprint,
+                "length": len(query),
             },
-            'result': {
-                'success': success,
-                'row_count': result_count,
-                'duration_ms': duration_ms,
-                'error': safe_error
+            "result": {
+                "success": success,
+                "row_count": result_count,
+                "duration_ms": duration_ms,
+                "error": safe_error,
             },
-            'access': {
-                'tables': tables_accessed or [],
-                'columns': columns_accessed or [],
-                'policy': policy_applied
+            "access": {
+                "tables": tables_accessed or [],
+                "columns": columns_accessed or [],
+                "policy": policy_applied,
             },
-            'pii': {
-                'detected': pii_detected,
-                'types': pii_types or [],
-                'count': pii_count
+            "pii": {
+                "detected": pii_detected,
+                "types": pii_types or [],
+                "count": pii_count,
             },
-            'context': user_context or {}
+            "context": user_context or {},
         }
 
         self._write_log(event)
@@ -381,7 +418,9 @@ class AuditLogger:
         # connection-string secret); the scrubbed detail is in the structured event above.
         status = "SUCCESS" if success else "FAILED"
         pii_info = f", PII: {pii_count} instances" if pii_detected else ""
-        logger.info(f"Query [{query_fingerprint}]: {result_count or 0} rows, {duration_ms or 0:.0f}ms, {status}{pii_info}")
+        logger.info(
+            f"Query [{query_fingerprint}]: {result_count or 0} rows, {duration_ms or 0:.0f}ms, {status}{pii_info}"
+        )
 
         return event
 
@@ -392,7 +431,7 @@ class AuditLogger:
         port: Optional[int] = None,
         workspace: Optional[str] = None,
         success: bool = True,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Log a connection event"""
         event_type = AuditEventType.CONNECTION
@@ -409,13 +448,13 @@ class AuditLogger:
             severity=severity,
             message=message,
             details={
-                'source': source,
-                'model': model_name,
-                'port': port,
-                'workspace': workspace,
-                'success': success,
-                'error': error_message
-            }
+                "source": source,
+                "model": model_name,
+                "port": port,
+                "workspace": workspace,
+                "success": success,
+                "error": error_message,
+            },
         )
 
     def log_policy_violation(
@@ -425,7 +464,7 @@ class AuditLogger:
         table: Optional[str] = None,
         column: Optional[str] = None,
         action_taken: str = "blocked",
-        query: Optional[str] = None
+        query: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Log a policy violation"""
         query_fingerprint = self._generate_query_fingerprint(query) if query else None
@@ -435,13 +474,13 @@ class AuditLogger:
             severity=AuditSeverity.WARNING,
             message=f"Policy violation: {policy_name} - {violation_type}",
             details={
-                'policy': policy_name,
-                'violation': violation_type,
-                'table': table,
-                'column': column,
-                'action': action_taken,
-                'query_fingerprint': query_fingerprint
-            }
+                "policy": policy_name,
+                "violation": violation_type,
+                "table": table,
+                "column": column,
+                "action": action_taken,
+                "query_fingerprint": query_fingerprint,
+            },
         )
 
     def log_pii_detection(
@@ -449,7 +488,7 @@ class AuditLogger:
         pii_types: List[str],
         count: int,
         columns_affected: List[str],
-        action_taken: str = "masked"
+        action_taken: str = "masked",
     ) -> Dict[str, Any]:
         """Log PII detection event"""
         return self.log_event(
@@ -457,11 +496,11 @@ class AuditLogger:
             severity=AuditSeverity.WARNING,
             message=f"PII detected: {count} instances of {', '.join(pii_types)}",
             details={
-                'types': pii_types,
-                'count': count,
-                'columns': columns_affected,
-                'action': action_taken
-            }
+                "types": pii_types,
+                "count": count,
+                "columns": columns_affected,
+                "action": action_taken,
+            },
         )
 
     def get_session_summary(self) -> AuditSessionSummary:
@@ -480,7 +519,7 @@ class AuditLogger:
             return events
 
         try:
-            with open(self.log_file, 'r', encoding='utf-8') as f:
+            with open(self.log_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
                 for line in lines[-count:]:
                     try:

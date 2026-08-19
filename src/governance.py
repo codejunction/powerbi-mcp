@@ -4,16 +4,23 @@ cross-workspace lineage / inventory / RLS-coverage answers can be unit tested wi
 a tenant. The server orchestrates the (admin-gated) Scanner calls and passes the
 scanResult JSON in here.
 """
+
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
 try:
-    from .models import CrossWorkspaceLineageResult, UsageAnalyticsResult, ActivityCount
+    from .models import ActivityCount, CrossWorkspaceLineageResult, UsageAnalyticsResult
 except ImportError:
-    from models import CrossWorkspaceLineageResult, UsageAnalyticsResult, ActivityCount  # type: ignore[no-redef]
+    from models import (
+        ActivityCount,
+        CrossWorkspaceLineageResult,  # type: ignore[no-redef]
+        UsageAnalyticsResult,
+    )
 
 
-def summarize_scan(scan: Dict[str, Any], dataset_name: Optional[str] = None) -> CrossWorkspaceLineageResult:
+def summarize_scan(
+    scan: Dict[str, Any], dataset_name: Optional[str] = None
+) -> CrossWorkspaceLineageResult:
     """Summarize a Scanner API scanResult into a tenant inventory + lineage answer.
 
     Returns counts, datasets missing RLS roles, sensitivity-label coverage, and - when
@@ -24,24 +31,36 @@ def summarize_scan(scan: Dict[str, Any], dataset_name: Optional[str] = None) -> 
     reports: List[Dict[str, Any]] = []
     for ws in workspaces:
         wn = ws.get("name") or ws.get("id")
-        for ds in (ws.get("datasets") or []):
-            datasets.append({
-                "workspace": wn,
-                "id": ds.get("id"),
-                "name": ds.get("name"),
-                "roles": ds.get("roles") or [],
-                "sensitivityLabel": (ds.get("sensitivityLabel") or {}).get("labelId") if isinstance(ds.get("sensitivityLabel"), dict) else ds.get("sensitivityLabelId"),
-            })
-        for rp in (ws.get("reports") or []):
-            reports.append({
-                "workspace": wn,
-                "id": rp.get("id"),
-                "name": rp.get("name"),
-                "datasetId": rp.get("datasetId"),
-            })
+        for ds in ws.get("datasets") or []:
+            datasets.append(
+                {
+                    "workspace": wn,
+                    "id": ds.get("id"),
+                    "name": ds.get("name"),
+                    "roles": ds.get("roles") or [],
+                    "sensitivityLabel": (
+                        (ds.get("sensitivityLabel") or {}).get("labelId")
+                        if isinstance(ds.get("sensitivityLabel"), dict)
+                        else ds.get("sensitivityLabelId")
+                    ),
+                }
+            )
+        for rp in ws.get("reports") or []:
+            reports.append(
+                {
+                    "workspace": wn,
+                    "id": rp.get("id"),
+                    "name": rp.get("name"),
+                    "datasetId": rp.get("datasetId"),
+                }
+            )
 
     no_rls = [f"{d['workspace']}/{d['name']}" for d in datasets if not d["roles"]]
-    unlabeled = [f"{d['workspace']}/{d['name']}" for d in datasets if not d.get("sensitivityLabel")]
+    unlabeled = [
+        f"{d['workspace']}/{d['name']}"
+        for d in datasets
+        if not d.get("sensitivityLabel")
+    ]
 
     result = CrossWorkspaceLineageResult(
         workspaces=len(workspaces),
@@ -92,7 +111,11 @@ def aggregate_activity(events: List[Dict[str, Any]]) -> UsageAnalyticsResult:
     return UsageAnalyticsResult(
         total_events=len(events),
         distinct_users=len(by_user),
-        by_activity=[ActivityCount(name=k, count=v) for k, v in by_activity.most_common(25)],
+        by_activity=[
+            ActivityCount(name=k, count=v) for k, v in by_activity.most_common(25)
+        ],
         top_users=[ActivityCount(name=k, count=v) for k, v in by_user.most_common(25)],
-        top_reports_by_views=[ActivityCount(name=k, count=v) for k, v in report_views.most_common(25)],
+        top_reports_by_views=[
+            ActivityCount(name=k, count=v) for k, v in report_views.most_common(25)
+        ],
     )

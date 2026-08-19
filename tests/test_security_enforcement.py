@@ -13,21 +13,28 @@ that pre-query checks block queries referencing blocked columns.
 
 Run: python test_security_enforcement.py   (pure Python, no Power BI required)
 """
+
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+)
 
-from security.access_policy import (  # noqa: E402
+from security.access_policy import (
     AccessPolicyEngine,
     ColumnPolicy,
     PolicyAction,
-    TablePolicy,
+    TablePolicy,  # noqa: E402
     parse_column_key,
 )
 from security.security_layer import SecurityLayer  # noqa: E402
 
-CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "policies.yaml")
+CONFIG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "config",
+    "policies.yaml",
+)
 
 _failures = []
 
@@ -42,7 +49,9 @@ def check(name, cond, detail=""):
 def test_parse_column_key():
     print("\n== parse_column_key ==")
     check("qualified", parse_column_key("Sales[Amount]") == ("Sales", "Amount"))
-    check("quoted table", parse_column_key("'Sales Data'[Amt]") == ("Sales Data", "Amt"))
+    check(
+        "quoted table", parse_column_key("'Sales Data'[Amt]") == ("Sales Data", "Amt")
+    )
     check("measure", parse_column_key("[Total Sales]") == (None, "Total Sales"))
     check("bare", parse_column_key("Amount") == (None, "Amount"))
 
@@ -60,7 +69,11 @@ def test_extract_references():
 def test_apply_to_results_shipped_config():
     print("\n== apply_to_results (shipped policies.yaml, wildcard '*' table) ==")
     engine = AccessPolicyEngine(config_path=CONFIG)
-    check("wildcard table loaded", "*" in engine.table_policies, str(list(engine.table_policies)))
+    check(
+        "wildcard table loaded",
+        "*" in engine.table_policies,
+        str(list(engine.table_policies)),
+    )
 
     rows = [
         {
@@ -73,15 +86,30 @@ def test_apply_to_results_shipped_config():
     processed, report = engine.apply_to_results(rows)
     out = processed[0]
 
-    check("ssn BLOCKED (None)", out["Customers[ssn]"] is None, repr(out["Customers[ssn]"]))
-    check("password BLOCKED (None)", out["Customers[password]"] is None, repr(out["Customers[password]"]))
+    check(
+        "ssn BLOCKED (None)", out["Customers[ssn]"] is None, repr(out["Customers[ssn]"])
+    )
+    check(
+        "password BLOCKED (None)",
+        out["Customers[password]"] is None,
+        repr(out["Customers[password]"]),
+    )
     check(
         "card_number MASKED (last4 kept)",
-        out["Customers[card_number]"] != "4111111111111234" and str(out["Customers[card_number]"]).endswith("1234"),
+        out["Customers[card_number]"] != "4111111111111234"
+        and str(out["Customers[card_number]"]).endswith("1234"),
         repr(out["Customers[card_number]"]),
     )
-    check("name ALLOWED (unchanged)", out["Customers[CustomerName]"] == "Jane Doe", repr(out["Customers[CustomerName]"]))
-    check("report flags blocked", "Customers[ssn]" in report.get("blocked_columns", []), str(report))
+    check(
+        "name ALLOWED (unchanged)",
+        out["Customers[CustomerName]"] == "Jane Doe",
+        repr(out["Customers[CustomerName]"]),
+    )
+    check(
+        "report flags blocked",
+        "Customers[ssn]" in report.get("blocked_columns", []),
+        str(report),
+    )
 
 
 def test_hash_and_redact_actions():
@@ -94,8 +122,14 @@ def test_hash_and_redact_actions():
 
     rows = [{"Users[Email]": "a@b.com", "Users[Notes]": "secret note", "Users[Id]": 7}]
     out = engine.apply_to_results(rows)[0][0]
-    check("email HASHED", str(out["Users[Email]"]).startswith("[HASH:"), repr(out["Users[Email]"]))
-    check("notes REDACTED", out["Users[Notes]"] == "[REDACTED]", repr(out["Users[Notes]"]))
+    check(
+        "email HASHED",
+        str(out["Users[Email]"]).startswith("[HASH:"),
+        repr(out["Users[Email]"]),
+    )
+    check(
+        "notes REDACTED", out["Users[Notes]"] == "[REDACTED]", repr(out["Users[Notes]"])
+    )
     check("id untouched", out["Users[Id]"] == 7, repr(out["Users[Id]"]))
 
 
@@ -103,15 +137,27 @@ def test_numeric_mask():
     print("\n== NUMERIC_MASK (session-randomized, stats-preserving) ==")
     engine = AccessPolicyEngine()
     wildcard = TablePolicy(name="*")
-    wildcard.columns["revenue"] = ColumnPolicy(name="revenue", action=PolicyAction.NUMERIC_MASK)
+    wildcard.columns["revenue"] = ColumnPolicy(
+        name="revenue", action=PolicyAction.NUMERIC_MASK
+    )
     engine.table_policies["*"] = wildcard
     engine.numeric_coefficient = 2.0  # deterministic for the test
 
-    rows = [{"Sales[Revenue]": 100, "Sales[City]": "Austin"},
-            {"Sales[Revenue]": 50, "Sales[City]": "Dallas"}]
+    rows = [
+        {"Sales[Revenue]": 100, "Sales[City]": "Austin"},
+        {"Sales[Revenue]": 50, "Sales[City]": "Dallas"},
+    ]
     out = engine.apply_to_results(rows)[0]
-    check("revenue scaled by coefficient", out[0]["Sales[Revenue]"] == 200, repr(out[0]["Sales[Revenue]"]))
-    check("ratios preserved (100:50 -> 200:100)", out[1]["Sales[Revenue]"] == 100, repr(out[1]["Sales[Revenue]"]))
+    check(
+        "revenue scaled by coefficient",
+        out[0]["Sales[Revenue]"] == 200,
+        repr(out[0]["Sales[Revenue]"]),
+    )
+    check(
+        "ratios preserved (100:50 -> 200:100)",
+        out[1]["Sales[Revenue]"] == 100,
+        repr(out[1]["Sales[Revenue]"]),
+    )
     check("non-numeric untouched", out[0]["Sales[City]"] == "Austin")
 
 
@@ -121,7 +167,9 @@ def test_pre_query_check_blocks():
     tables, columns = AccessPolicyEngine.extract_references(
         "EVALUATE FILTER(Customers, Customers[ssn] <> BLANK())"
     )
-    res = engine.check_query("EVALUATE FILTER(Customers, Customers[ssn] <> BLANK())", tables, columns)
+    res = engine.check_query(
+        "EVALUATE FILTER(Customers, Customers[ssn] <> BLANK())", tables, columns
+    )
     check("blocked query not allowed", res.allowed is False, res.reason)
 
     t2, c2 = AccessPolicyEngine.extract_references("EVALUATE Sales")
@@ -133,9 +181,19 @@ def test_security_layer_end_to_end():
     print("\n== SecurityLayer.process_results end-to-end (audit off) ==")
     sec = SecurityLayer(config_path=CONFIG, enable_audit=False)
     rows = [{"Customers[ssn]": "111-22-3333", "Customers[City]": "Austin"}]
-    safe, report = sec.process_results(results=rows, query="EVALUATE Customers", source="desktop")
-    check("ssn blocked through layer", safe[0]["Customers[ssn]"] is None, repr(safe[0]["Customers[ssn]"]))
-    check("city preserved", safe[0]["Customers[City]"] == "Austin", repr(safe[0]["Customers[City]"]))
+    safe, report = sec.process_results(
+        results=rows, query="EVALUATE Customers", source="desktop"
+    )
+    check(
+        "ssn blocked through layer",
+        safe[0]["Customers[ssn]"] is None,
+        repr(safe[0]["Customers[ssn]"]),
+    )
+    check(
+        "city preserved",
+        safe[0]["Customers[City]"] == "Austin",
+        repr(safe[0]["Customers[City]"]),
+    )
 
 
 if __name__ == "__main__":

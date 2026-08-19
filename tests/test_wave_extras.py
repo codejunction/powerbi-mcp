@@ -2,22 +2,29 @@
 SemanticOps-parity extras: tamper-evident audit hash chain + DAX regression runner.
 Run: python test_wave_extras.py   (pure Python, no Power BI)
 """
+
 import asyncio
 import json
 import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+)
 import server  # noqa: E402
+
 from model_analysis import dax_test_verdict  # noqa: E402
-from security.audit_logger import AuditLogger, AuditEventType  # noqa: E402
+from security.audit_logger import AuditEventType, AuditLogger  # noqa: E402
 
 _failures = []
 
 
 def check(name, cond, detail=""):
-    print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail and not cond else ""))
+    print(
+        f"  [{'PASS' if cond else 'FAIL'}] {name}"
+        + (f": {detail}" if detail and not cond else "")
+    )
     if not cond:
         _failures.append(name)
 
@@ -42,7 +49,9 @@ def test_audit_chain():
         for i in range(3):
             a.log_event(AuditEventType.QUERY_SUCCESS, message=f"event {i}")
         res = a.verify_chain()
-        check("fresh chain valid", res["valid"] is True and res["checked"] == 3, str(res))
+        check(
+            "fresh chain valid", res["valid"] is True and res["checked"] == 3, str(res)
+        )
 
         # Tamper with line 2's content but keep its stored hashes
         lines = open(a.log_file, encoding="utf-8").read().splitlines()
@@ -75,6 +84,7 @@ class FakeDesktop:
     def execute_dax(self, dax, max_rows=None):
         # return the integer embedded in the query (so tests can assert expected)
         import re
+
         m = re.search(r"(\d+)", dax)
         return [{"v": int(m.group(1))}] if m else [{"v": 0}]
 
@@ -84,11 +94,15 @@ def test_run_dax_tests():
     srv = server.PowerBIMCPServer()
     srv.desktop_connector = FakeDesktop()
     tests = [
-        {"name": "sales total", "dax": "EVALUATE ROW(\"v\", 42)", "expected": 42},
-        {"name": "wrong", "dax": "EVALUATE ROW(\"v\", 7)", "expected": 99},
+        {"name": "sales total", "dax": 'EVALUATE ROW("v", 42)', "expected": 42},
+        {"name": "wrong", "dax": 'EVALUATE ROW("v", 7)', "expected": 99},
     ]
     text, structured = run(srv._handle_run_dax_tests({"tests": tests}))
-    check("1 of 2 passed", structured["passed"] == 1 and structured["total"] == 2, str(structured))
+    check(
+        "1 of 2 passed",
+        structured["passed"] == 1 and structured["total"] == 2,
+        str(structured),
+    )
     check("overall FAIL", structured["all_passed"] is False)
     check("text shows verdict", text.startswith("[FAIL]"), text[:40])
 

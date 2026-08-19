@@ -3,18 +3,24 @@ Bundle D (relationship management) control-flow tests with mocked TOM connector.
 
 Run: python test_bundle_d.py
 """
+
 import asyncio
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+)
 import server  # noqa: E402
 
 _failures = []
 
 
 def check(name, cond, detail=""):
-    print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail and not cond else ""))
+    print(
+        f"  [{'PASS' if cond else 'FAIL'}] {name}"
+        + (f": {detail}" if detail and not cond else "")
+    )
     if not cond:
         _failures.append(name)
 
@@ -35,11 +41,27 @@ class FakeTOM:
         self.current_port = 12345
         self.created, self.deleted, self.saved = [], 0, 0
 
-    def create_relationship(self, ft, fc, tt, tc, cardinality="many_to_one", cross_filter="single", is_active=True):
+    def create_relationship(
+        self,
+        ft,
+        fc,
+        tt,
+        tc,
+        cardinality="many_to_one",
+        cross_filter="single",
+        is_active=True,
+    ):
         self.created.append((ft, fc, tt, tc, cardinality, cross_filter))
         return FakeResult(True, f"Created relationship {ft}[{fc}] -> {tt}[{tc}]")
 
-    def delete_relationship(self, from_table=None, from_column=None, to_table=None, to_column=None, name=None):
+    def delete_relationship(
+        self,
+        from_table=None,
+        from_column=None,
+        to_table=None,
+        to_column=None,
+        name=None,
+    ):
         self.deleted += 1
         return FakeResult(True, "Deleted relationship")
 
@@ -66,17 +88,33 @@ def test_create_relationship():
     err = run(srv._handle_create_relationship({"from_table": "Sales"}))
     check("missing args -> error", err.startswith("Error:"), err[:50])
 
-    res = run(srv._handle_create_relationship({"from_table": "Sales", "from_column": "DateKey", "to_table": "DateDim", "to_column": "DateKey"}))
+    res = run(
+        srv._handle_create_relationship(
+            {
+                "from_table": "Sales",
+                "from_column": "DateKey",
+                "to_table": "DateDim",
+                "to_column": "DateKey",
+            }
+        )
+    )
     check("created", "Created relationship" in res, res[:60])
     check("saved (no txn)", srv.tom_connector.saved == 1)
-    check("recorded", srv.tom_connector.created and srv.tom_connector.created[0][0] == "Sales")
+    check(
+        "recorded",
+        srv.tom_connector.created and srv.tom_connector.created[0][0] == "Sales",
+    )
 
 
 def test_relationship_transaction():
     print("\n== relationship honors transaction ==")
     srv = make_server()
     run(srv._handle_tom_begin_transaction())
-    res = run(srv._handle_create_relationship({"from_table": "S", "from_column": "K", "to_table": "D", "to_column": "K"}))
+    res = run(
+        srv._handle_create_relationship(
+            {"from_table": "S", "from_column": "K", "to_table": "D", "to_column": "K"}
+        )
+    )
     check("create deferred (PENDING)", "PENDING" in res, res[:60])
     check("not saved during txn", srv.tom_connector.saved == 0)
     run(srv._handle_tom_commit_transaction())
@@ -86,7 +124,9 @@ def test_relationship_transaction():
 def test_delete_relationship():
     print("\n== delete_relationship ==")
     srv = make_server()
-    res = run(srv._handle_delete_relationship({"from_table": "Sales", "to_table": "DateDim"}))
+    res = run(
+        srv._handle_delete_relationship({"from_table": "Sales", "to_table": "DateDim"})
+    )
     check("deleted", "Deleted relationship" in res, res[:60])
     check("delete recorded", srv.tom_connector.deleted == 1)
     check("saved (no txn)", srv.tom_connector.saved == 1)
