@@ -32,27 +32,27 @@ from models import (
     SemanticModelDescription, SemanticModel, TableDetail, ColumnDetail, MeasureDetail, RelationshipDetail,
     CandidateMeasure, QueryPlan, QueryPlanResult,
     # model quality
-    BpaRunResult, BpaFinding, BpaSummary,
-    AiReadinessResult, AiReadinessMetrics,
-    DaxLintResult, DaxLintFinding, DaxLintSummary,
-    DaxRewriteResult, DaxRewrite,
+    BpaRunResult,
+    AiReadinessResult,
+    DaxLintResult, DaxRewrite,
+    DaxRewriteResult,
     # storage & performance
     ModelStorageResult, TableStorageInfo,
     QueryPerfResult, ModelDiffResult,
     # governance & deployment
     ReferentialIntegrityResult, ReferentialViolation,
     PreDeployGateResult,
-    BpaValidateResult, BpaRuleIssue,
+    BpaValidateResult,
     AuditIntegrityResult,
     # diagnostics & ops
-    RefreshDoctorResult, RefreshDiagnosis,
+    RefreshDoctorResult,
     UnusedObjectsResult,
     ImpactAnalysisResult, DependentObject,
     DaxTestRunResult, DaxTestCaseResult,
     # fleet / governance ops
     CrossWorkspaceLineageResult,
     FleetRefreshResult, RefreshFailure,
-    UsageAnalyticsResult, ActivityCount,
+    UsageAnalyticsResult,
     # security & audit
     SecurityStatus, AuditEvent,
     # DAX generation
@@ -166,17 +166,7 @@ def _norm(rows: list[dict]) -> list[dict]:
     return [{str(k).strip("[]"): v for k, v in r.items()} for r in (rows or [])]
 
 
-def _agg_to_model(raw: dict) -> "UsageAnalyticsResult":
-    """Convert aggregate_activity() output (Counter.most_common tuples) to UsageAnalyticsResult."""
-    def _pairs(lst: list) -> list:
-        return [ActivityCount(name=str(n), count=int(c)) for n, c in (lst or [])]
-    return UsageAnalyticsResult(
-        total_events=raw["total_events"],
-        distinct_users=raw["distinct_users"],
-        by_activity=_pairs(raw.get("by_activity", [])),
-        top_users=_pairs(raw.get("top_users", [])),
-        top_reports_by_views=_pairs(raw.get("top_reports_by_views", [])),
-    )
+
 
 
 async def _gather_model(workspace_name: str, dataset_name: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -830,11 +820,7 @@ async def run_bpa(
         model, err = await _gather_model(workspace_name, dataset_name)
         if err:
             raise ValueError(err)
-        result = run_bpa_fn(model, categories=categories, min_severity=min_severity)
-        return BpaRunResult(
-            summary=BpaSummary(**result["summary"]),
-            findings=[BpaFinding(**f) for f in result["findings"]],
-        )
+        return run_bpa_fn(model, categories=categories, min_severity=min_severity)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -864,12 +850,7 @@ async def audit_ai_readiness(workspace_name: str, dataset_name: str) -> AiReadin
         model, err = await _gather_model(workspace_name, dataset_name)
         if err:
             raise ValueError(err)
-        r = ai_readiness_fn(model)
-        return AiReadinessResult(
-            score=r["score"], grade=r["grade"],
-            metrics=AiReadinessMetrics(**r["metrics"]),
-            recommendations=r["recommendations"],
-        )
+        return ai_readiness_fn(model)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -915,12 +896,11 @@ async def dax_lint(
                 raise ValueError(err)
             measures = _measures_from_model(model, measure_name)
         result = _dax_lint_mod.lint_measures(measures)
-        findings = [f for f in result["findings"]
-                    if _dax_lint_mod.SEVERITY_RANK.get(f["severity"], 0) >= min_rank]
-        return DaxLintResult(
-            summary=DaxLintSummary(**result["summary"]),
-            findings=[DaxLintFinding(**f) for f in findings],
-        )
+        if min_rank > 1:
+            filtered = [f for f in result.findings
+                        if _dax_lint_mod.SEVERITY_RANK.get(f.severity, 0) >= min_rank]
+            return DaxLintResult(summary=result.summary, findings=filtered)
+        return result
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -951,7 +931,7 @@ async def dax_suggest_rewrite(
         expression:     Rewrite a raw DAX string directly (optional)
     """
     try:
-        rewrites: list[dict] = []
+        rewrites: list[DaxRewrite] = []
         if expression:
             rewrites = _dax_lint_mod.suggest_rewrites(measure_name or "(expression)", expression)
         else:
@@ -959,10 +939,8 @@ async def dax_suggest_rewrite(
             if err:
                 raise ValueError(err)
             for m in _measures_from_model(model, measure_name):
-                for h in _dax_lint_mod.suggest_rewrites(m["name"], m["expression"]):
-                    h["object"] = m["name"]
-                    rewrites.append(h)
-        return DaxRewriteResult(rewrites=[DaxRewrite(**r) for r in rewrites], count=len(rewrites))
+                rewrites.extend(_dax_lint_mod.suggest_rewrites(m["name"], m["expression"]))
+        return DaxRewriteResult(rewrites=rewrites, count=len(rewrites))
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1113,7 +1091,7 @@ async def model_diff(
         after, err = await _gather_model(workspace_name, dataset_name)
         if err:
             raise ValueError(err)
-        return ModelDiffResult(**model_analysis.diff_models(before, after))
+        return model_analysis.diff_models(before, after)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1278,14 +1256,7 @@ async def bpa_validate_rules(
         fix:   Attempt to auto-correct minor issues like missing fields (default: false)
     """
     try:
-        r = _bpa_authoring_mod.validate_rules(rules, fix=fix)
-        return BpaValidateResult(
-            valid=r["valid"],
-            rule_count=r["rule_count"],
-            errors=[BpaRuleIssue(**e) for e in r.get("errors", [])],
-            warnings=[BpaRuleIssue(**w) for w in r.get("warnings", [])],
-            fixed_json=r.get("fixed_json"),
-        )
+        return _bpa_authoring_mod.validate_rules(rules, fix=fix)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1308,8 +1279,7 @@ async def verify_audit_integrity() -> AuditIntegrityResult:
     try:
         if not _app_context or not _app_context.security:
             return AuditIntegrityResult(valid=True, checked=0, message="Security layer not active.")
-        r = _app_context.security.verify_audit_integrity()
-        return AuditIntegrityResult(**r)
+        return _app_context.security.verify_audit_integrity()
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1378,7 +1348,7 @@ async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: 
             consecutive_failures=consecutive,
             most_recent_status=history[0].get("status"),
             most_recent_end=history[0].get("endTime"),
-            diagnosis=RefreshDiagnosis(**diag_raw) if diag_raw else None,
+            diagnosis=diag_raw,
             warning=(
                 f"{consecutive} consecutive failure(s). Power BI auto-disables a refresh schedule "
                 f"after {_refresh_diag_mod.CONSECUTIVE_FAILURE_DISABLE_THRESHOLD} consecutive failures."
@@ -1675,7 +1645,7 @@ async def cross_workspace_lineage(
                         json.dump(scan, f)
                 except Exception:
                     pass
-        return CrossWorkspaceLineageResult(**summarize_scan(scan, dataset_name=dataset_name))
+        return summarize_scan(scan, dataset_name=dataset_name)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1717,7 +1687,7 @@ async def fleet_refresh_monitor(workspace_ids: list[str]) -> FleetRefreshResult:
                     continue
                 if hist and str(hist[0].get("status")) == "Failed":
                     diag = _refresh_diag_mod.classify_refresh_error(hist[0].get("serviceExceptionJson") or "")
-                    failures.append(RefreshFailure(dataset=ds["name"], end_time=hist[0].get("endTime"), cause=diag["cause"]))
+                    failures.append(RefreshFailure(dataset=ds["name"], end_time=hist[0].get("endTime"), cause=diag.cause))
         return FleetRefreshResult(checked=checked, failed_count=len(failures), failures=failures)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
@@ -1752,7 +1722,7 @@ async def usage_and_orphan_analytics(date: str | None = None, filter: str | None
             date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
         loop = asyncio.get_event_loop()
         events = await loop.run_in_executor(None, conn.admin_get_activity_events_for_day, date, filter)
-        return _agg_to_model(aggregate_activity(events))
+        return aggregate_activity(events)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1787,7 +1757,7 @@ async def security_status() -> SecurityStatus:
             pii_detection_enabled=sec.enable_pii_detection,
             audit_logging_enabled=sec.enable_audit,
             access_policies_enabled=sec.enable_policies,
-            active_policies=summary.get("tables_with_policies", []),
+            active_policies=summary.tables_with_policies,
         )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
@@ -1883,7 +1853,7 @@ async def generate_measure_suite(
             "dimension_columns": dimension_columns, "column": column,
             "variants": variants, "display_folder": display_folder,
         }.items() if v is not None}
-        return [MeasureDefinition(**m) for m in dax_generator.generate_suite(kind, **params)]
+        return dax_generator.generate_suite(kind, **params)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1913,7 +1883,7 @@ async def summarize_security_scan(scan: dict, dataset_name: str | None = None) -
         dataset_name: Narrow the output to this specific dataset name (optional)
     """
     try:
-        return CrossWorkspaceLineageResult(**summarize_scan(scan, dataset_name=dataset_name))
+        return summarize_scan(scan, dataset_name=dataset_name)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1939,7 +1909,7 @@ async def aggregate_user_activity(events: list[dict]) -> UsageAnalyticsResult:
         events: List of activity event dicts (each must have activityEventType and userId)
     """
     try:
-        return _agg_to_model(aggregate_activity(events))
+        return aggregate_activity(events)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 

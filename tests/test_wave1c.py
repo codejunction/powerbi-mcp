@@ -22,13 +22,13 @@ def check(name, cond, detail=""):
 def test_classifier():
     print("\n== classify_refresh_error ==")
     from refresh_diagnostics import classify_refresh_error
-    check("credentials", classify_refresh_error("AccessUnauthorized: credentials failed")["id"] == "credentials_expired")
-    check("eviction 0xC11C0020", classify_refresh_error("error 0xC11C0020 model evicted")["id"] == "model_eviction")
-    check("capacity throttle", classify_refresh_error("exceeded the capacity limit for semantic model refreshes")["id"] == "capacity_throttle")
-    check("gateway", classify_refresh_error("The gateway is offline")["id"] == "gateway_unreachable")
-    check("timeout", classify_refresh_error("operation timed out")["id"] == "timeout")
-    check("unknown fallback", classify_refresh_error("something weird")["id"] == "unknown")
-    check("empty -> none", classify_refresh_error("")["id"] == "none")
+    check("credentials", classify_refresh_error("AccessUnauthorized: credentials failed").id == "credentials_expired")
+    check("eviction 0xC11C0020", classify_refresh_error("error 0xC11C0020 model evicted").id == "model_eviction")
+    check("capacity throttle", classify_refresh_error("exceeded the capacity limit for semantic model refreshes").id == "capacity_throttle")
+    check("gateway", classify_refresh_error("The gateway is offline").id == "gateway_unreachable")
+    check("timeout", classify_refresh_error("operation timed out").id == "timeout")
+    check("unknown fallback", classify_refresh_error("something weird").id == "unknown")
+    check("empty -> none", classify_refresh_error("").id == "none")
 
 
 def test_resources():

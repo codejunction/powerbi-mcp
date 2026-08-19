@@ -18,6 +18,11 @@ Entry points:
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from .models import DaxLintFinding, DaxLintResult, DaxLintSummary, DaxRewrite, DaxRewriteResult
+except ImportError:
+    from models import DaxLintFinding, DaxLintResult, DaxLintSummary, DaxRewrite, DaxRewriteResult  # type: ignore[no-redef]
+
 SEVERITY_RANK = {"error": 3, "warning": 2, "info": 1}
 
 # A curated set of DAX functions/keywords used to flag likely-hallucinated or misspelled
@@ -166,18 +171,18 @@ def _arg_span(tokens: List[Dict[str, Any]], open_paren_idx: int) -> Tuple[int, i
     return open_paren_idx + 1, len(tokens)
 
 
-def _finding(rule_id, severity, message, suggestion, line, obj=None) -> Dict[str, Any]:
-    return {"rule_id": rule_id, "severity": severity, "message": message,
-            "suggestion": suggestion, "line": line, "object": obj}
+def _finding(rule_id, severity, message, suggestion, line, obj=None) -> DaxLintFinding:
+    return DaxLintFinding(rule_id=rule_id, severity=severity, message=message,
+                          suggestion=suggestion, line=line, object=obj)
 
 
-def lint_expression(name: Optional[str], dax: str) -> List[Dict[str, Any]]:
+def lint_expression(name: Optional[str], dax: str) -> List[DaxLintFinding]:
     """Lint a single DAX expression, returning a list of finding dicts."""
     if not dax or not dax.strip():
         return []
     tokens = tokenize(dax)
     var_names = _var_names(tokens)
-    findings: List[Dict[str, Any]] = []
+    findings: List[DaxLintFinding] = []
     n = len(tokens)
 
     for i, t in enumerate(tokens):
@@ -304,45 +309,52 @@ def lint_expression(name: Optional[str], dax: str) -> List[Dict[str, Any]]:
                     "Confirm zeros are intended; otherwise drop '+ 0' and let measures return BLANK.",
                     tokens[i]["line"], name))
 
-    findings.sort(key=lambda f: (-SEVERITY_RANK.get(f["severity"], 0), f["line"], f["rule_id"]))
+    findings.sort(key=lambda f: (-SEVERITY_RANK.get(f.severity, 0), f.line or 0, f.rule_id))
     return findings
 
 
-def lint_measures(measures: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Lint a list of {name, expression} measures. Returns {summary, findings}."""
-    all_findings: List[Dict[str, Any]] = []
+def lint_measures(measures: List[Dict[str, Any]]) -> DaxLintResult:
+    """Lint a list of {name, expression} measures. Returns DaxLintResult."""
+    all_findings: List[DaxLintFinding] = []
     for m in measures or []:
         all_findings.extend(lint_expression(m.get("name"), m.get("expression") or m.get("dax") or ""))
     by_sev: Dict[str, int] = {}
     by_rule: Dict[str, int] = {}
     for f in all_findings:
-        by_sev[f["severity"]] = by_sev.get(f["severity"], 0) + 1
-        by_rule[f["rule_id"]] = by_rule.get(f["rule_id"], 0) + 1
-    return {
-        "summary": {"total": len(all_findings), "by_severity": by_sev, "by_rule": by_rule,
-                    "measures_scanned": len(measures or [])},
-        "findings": all_findings,
-    }
+        by_sev[f.severity] = by_sev.get(f.severity, 0) + 1
+        by_rule[f.rule_id] = by_rule.get(f.rule_id, 0) + 1
+    return DaxLintResult(
+        summary=DaxLintSummary(
+            total=len(all_findings),
+            by_severity=by_sev,
+            by_rule=by_rule,
+            measures_scanned=len(measures or []),
+        ),
+        findings=all_findings,
+    )
 
 
-def suggest_rewrites(name: Optional[str], dax: str) -> List[Dict[str, Any]]:
+def suggest_rewrites(name: Optional[str], dax: str) -> List[DaxRewrite]:
     """Concrete, mechanical rewrite hints for the auto-fixable rules. Conservative: returns
     hints (before/after templates), not a guaranteed-equivalent transformed expression."""
-    hints: List[Dict[str, Any]] = []
+    hints: List[DaxRewrite] = []
     for f in lint_expression(name, dax):
-        if f["rule_id"] == "DL003":
-            hints.append({"rule_id": "DL003", "line": f["line"],
-                          "before": "<numerator> / <denominator>",
-                          "after": "DIVIDE(<numerator>, <denominator>)",
-                          "note": "DIVIDE returns BLANK (not an error) when the denominator is 0."})
-        elif f["rule_id"] == "DL001":
-            hints.append({"rule_id": "DL001", "line": f["line"],
-                          "before": "CALCULATE(<expr>, FILTER(Table, Table[Col] = x))",
-                          "after": "CALCULATE(<expr>, Table[Col] = x)",
-                          "note": "A boolean filter argument is applied without materializing the whole table."})
-        elif f["rule_id"] == "DL007":
-            hints.append({"rule_id": "DL007", "line": f["line"],
-                          "before": "SUMMARIZE(Table, Table[Group], \"Total\", SUM(Table[Amount]))",
-                          "after": "SUMMARIZECOLUMNS(Table[Group], \"Total\", SUM(Table[Amount]))",
-                          "note": "SUMMARIZECOLUMNS computes the aggregation in the correct filter context."})
+        if f.rule_id == "DL003":
+            hints.append(DaxRewrite(rule_id="DL003", line=f.line,
+                          before="<numerator> / <denominator>",
+                          after="DIVIDE(<numerator>, <denominator>)",
+                          note="DIVIDE returns BLANK (not an error) when the denominator is 0.",
+                          object=name))
+        elif f.rule_id == "DL001":
+            hints.append(DaxRewrite(rule_id="DL001", line=f.line,
+                          before="CALCULATE(<expr>, FILTER(Table, Table[Col] = x))",
+                          after="CALCULATE(<expr>, Table[Col] = x)",
+                          note="A boolean filter argument is applied without materializing the whole table.",
+                          object=name))
+        elif f.rule_id == "DL007":
+            hints.append(DaxRewrite(rule_id="DL007", line=f.line,
+                          before="SUMMARIZE(Table, Table[Group], \"Total\", SUM(Table[Amount]))",
+                          after="SUMMARIZECOLUMNS(Table[Group], \"Total\", SUM(Table[Amount]))",
+                          note="SUMMARIZECOLUMNS computes the aggregation in the correct filter context.",
+                          object=name))
     return hints

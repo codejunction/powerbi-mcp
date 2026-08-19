@@ -279,11 +279,25 @@ class QueryPerfResult(BaseModel):
     hints: List[str] = Field(description="Heuristic optimization advice strings")
 
 
+class ModelDiffSummary(BaseModel):
+    """Per-category change counts from diff_models."""
+    tables_added: int = 0
+    tables_removed: int = 0
+    columns_added: int = 0
+    columns_removed: int = 0
+    columns_changed: int = 0
+    measures_added: int = 0
+    measures_removed: int = 0
+    measures_changed: int = 0
+    relationships_added: int = 0
+    relationships_removed: int = 0
+
+
 class ModelDiffResult(BaseModel):
     """Return type of model_diff."""
     has_changes: bool
     total_changes: int
-    summary: str = Field(description="Human-readable one-line summary")
+    summary: ModelDiffSummary
     markdown: str = Field(description="Full diff in Markdown")
 
 
@@ -482,6 +496,86 @@ class MeasureDefinition(BaseModel):
     format_string: Optional[str] = Field(default=None, description="e.g. '#,##0', '0.0%'")
     description: Optional[str] = Field(default=None, description="Plain-language description for Copilot")
     display_folder: Optional[str] = Field(default=None, description="Fields pane folder")
+
+
+# ============================================================================
+# BPA authoring
+# ============================================================================
+
+class LocalRuleFileSummary(BaseModel):
+    """Per-file summary from bpa_authoring.audit_rule_sources."""
+    source: str = Field(description="Label/path identifying the rule file")
+    rule_count: Optional[int] = Field(default=None, description="Number of rules parsed (null on error)")
+    valid: Optional[bool] = Field(default=None, description="Whether the file passed validation")
+    error: Optional[str] = Field(default=None, description="Parse error when rule_count is null")
+
+
+class RuleSourcesResult(BaseModel):
+    """Return type of bpa_authoring.audit_rule_sources."""
+    embedded_rule_count: int
+    embedded_rule_ids: List[str]
+    external_rule_files: List[str]
+    ignored_rule_ids: List[str]
+    local_rule_files: List[LocalRuleFileSummary]
+
+
+# ============================================================================
+# Security layer status
+# ============================================================================
+
+class EnabledFeatures(BaseModel):
+    """Which security sub-systems are active."""
+    pii_detection: bool
+    audit_logging: bool
+    access_policies: bool
+
+
+class PiiDetectorStatus(BaseModel):
+    """Runtime state of the PII detector."""
+    strategy: Optional[str] = Field(default=None, description="Active masking strategy name")
+    enabled_types: List[str] = Field(default_factory=list, description="Active PII type names")
+
+
+class PoliciesStatus(BaseModel):
+    """Runtime state of the access-policy engine."""
+    table_count: int = 0
+    global_enabled: bool = False
+
+
+class AuditSessionSummary(BaseModel):
+    """Session-level audit log summary (from AuditLogger.get_session_summary)."""
+    session_id: str
+    query_count: int
+    log_file: str
+
+
+class SecurityLayerStatus(BaseModel):
+    """Return type of SecurityLayer.get_status."""
+    enabled: EnabledFeatures
+    pii_detector: PiiDetectorStatus
+    audit: Optional[AuditSessionSummary] = None
+    policies: PoliciesStatus
+
+
+class PolicySummary(BaseModel):
+    """Return type of SecurityLayer.get_policy_summary."""
+    enabled: bool
+    max_rows: Optional[int] = Field(default=None)
+    pii_detection: Optional[bool] = Field(default=None)
+    pii_action: Optional[str] = Field(default=None)
+    tables_with_policies: List[str] = Field(default_factory=list)
+    blocked_patterns_count: int = 0
+
+
+class SecurityReport(BaseModel):
+    """Security-processing summary returned alongside processed results."""
+    pii_detected: bool = False
+    pii_count: int = 0
+    pii_types: List[str] = Field(default_factory=list)
+    policy_applied: bool = False
+    columns_masked: List[str] = Field(default_factory=list)
+    columns_blocked: List[str] = Field(default_factory=list)
+    processing_time_ms: float = 0.0
 
 
 # ============================================================================

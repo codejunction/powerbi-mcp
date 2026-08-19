@@ -15,6 +15,11 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Union
 
+try:
+    from .models import BpaValidateResult, BpaRuleIssue, RuleSourcesResult, LocalRuleFileSummary
+except ImportError:
+    from models import BpaValidateResult, BpaRuleIssue, RuleSourcesResult, LocalRuleFileSummary  # type: ignore[no-redef]
+
 # TOM object types a rule Scope may target (the public BPA scope vocabulary).
 VALID_SCOPES = {
     "Model", "Table", "Column", "DataColumn", "CalculatedColumn", "CalculatedTableColumn",
@@ -40,19 +45,19 @@ def _as_rule_list(rules: Union[str, list, dict]) -> List[Dict[str, Any]]:
     return rules
 
 
-def validate_rules(rules: Union[str, list, dict], fix: bool = False) -> Dict[str, Any]:
+def validate_rules(rules: Union[str, list, dict], fix: bool = False) -> BpaValidateResult:
     """Validate a BPA rules JSON. With fix=True, also return a cleaned copy (runtime fields
     stripped, null FixExpression dropped)."""
     rule_list = _as_rule_list(rules)
-    errors: List[Dict[str, Any]] = []
-    warnings: List[Dict[str, Any]] = []
+    errors: List[BpaRuleIssue] = []
+    warnings: List[BpaRuleIssue] = []
     seen_ids: Dict[str, int] = {}
 
     def err(idx, rid, msg):
-        errors.append({"index": idx, "rule_id": rid, "message": msg})
+        errors.append(BpaRuleIssue(index=idx, rule_id=rid, message=msg))
 
     def warn(idx, rid, msg):
-        warnings.append({"index": idx, "rule_id": rid, "message": msg})
+        warnings.append(BpaRuleIssue(index=idx, rule_id=rid, message=msg))
 
     cleaned: List[Dict[str, Any]] = []
     for i, rule in enumerate(rule_list):
@@ -98,21 +103,19 @@ def validate_rules(rules: Union[str, list, dict], fix: bool = False) -> Dict[str
 
     for rid, count in seen_ids.items():
         if count > 1:
-            errors.append({"index": None, "rule_id": rid, "message": f"Duplicate rule ID '{rid}' ({count} times)."})
+            errors.append(BpaRuleIssue(index=None, rule_id=rid, message=f"Duplicate rule ID '{rid}' ({count} times)."))
 
-    result: Dict[str, Any] = {
-        "valid": len(errors) == 0,
-        "rule_count": len(rule_list),
-        "errors": errors,
-        "warnings": warnings,
-    }
-    if fix:
-        result["fixed"] = cleaned
-    return result
+    return BpaValidateResult(
+        valid=len(errors) == 0,
+        rule_count=len(rule_list),
+        errors=errors,
+        warnings=warnings,
+        fixed_json=json.dumps(cleaned) if fix else None,
+    )
 
 
 def audit_rule_sources(model_text: Optional[str] = None,
-                       local_rule_files: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                       local_rule_files: Optional[Dict[str, str]] = None) -> RuleSourcesResult:
     """Discover BPA rules associated with a model. Parses the model's TMDL/BIM text for embedded
     rules, external rule-file URLs, and ignored rule IDs. local_rule_files maps a label to JSON
     text of a user/machine BPARules.json so its rule IDs can be merged in."""
@@ -169,18 +172,18 @@ def audit_rule_sources(model_text: Optional[str] = None,
         except Exception:
             ignored_ids.extend(re.findall(r'"([^"]+)"', raw_ignore))
 
-    local_summary = []
+    local_summary: List[LocalRuleFileSummary] = []
     for label, content in (local_rule_files or {}).items():
         try:
             res = validate_rules(content)
-            local_summary.append({"source": label, "rule_count": res["rule_count"], "valid": res["valid"]})
+            local_summary.append(LocalRuleFileSummary(source=label, rule_count=res.rule_count, valid=res.valid))
         except Exception as e:
-            local_summary.append({"source": label, "error": str(e)})
+            local_summary.append(LocalRuleFileSummary(source=label, error=str(e)))
 
-    return {
-        "embedded_rule_count": len(embedded_ids),
-        "embedded_rule_ids": embedded_ids,
-        "external_rule_files": external_files,
-        "ignored_rule_ids": ignored_ids,
-        "local_rule_files": local_summary,
-    }
+    return RuleSourcesResult(
+        embedded_rule_count=len(embedded_ids),
+        embedded_rule_ids=embedded_ids,
+        external_rule_files=external_files,
+        ignored_rule_ids=ignored_ids,
+        local_rule_files=local_summary,
+    )

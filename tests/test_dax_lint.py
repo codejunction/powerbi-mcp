@@ -19,7 +19,7 @@ def check(name, cond, detail=""):
 
 
 def rules(dax):
-    return {f["rule_id"] for f in dax_lint.lint_expression("M", dax)}
+    return {f.rule_id for f in dax_lint.lint_expression("M", dax)}
 
 
 def test_rules_fire():
@@ -55,15 +55,15 @@ def test_tokenizer_robustness():
 
 def test_rewrites_and_summary():
     print("\n== rewrite hints + measure summary ==")
-    hints = {h["rule_id"] for h in dax_lint.suggest_rewrites("M", 'CALCULATE([X], FILTER(Sales, Sales[R]="A")) + [Y]/[Z]')}
+    hints = {h.rule_id for h in dax_lint.suggest_rewrites("M", 'CALCULATE([X], FILTER(Sales, Sales[R]="A")) + [Y]/[Z]')}
     check("rewrite for DL001", "DL001" in hints)
     check("rewrite for DL003", "DL003" in hints)
     res = dax_lint.lint_measures([
         {"name": "Bad", "expression": "[a]/[b]"},
         {"name": "Good", "expression": "DIVIDE([a],[b])"},
     ])
-    check("summary counts findings", res["summary"]["total"] >= 1 and res["summary"]["measures_scanned"] == 2)
-    check("findings carry object name", any(f["object"] == "Bad" for f in res["findings"]))
+    check("summary counts findings", res.summary.total >= 1 and res.summary.measures_scanned == 2)
+    check("findings carry object name", any(f.object == "Bad" for f in res.findings))
 
 
 if __name__ == "__main__":

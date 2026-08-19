@@ -26,6 +26,11 @@ Every field is optional; rules degrade gracefully when a field is missing.
 import re
 from typing import Any, Dict, List
 
+try:
+    from .models import BpaRunResult, BpaSummary, BpaFinding, AiReadinessResult, AiReadinessMetrics, ModelDiffResult, ModelDiffSummary
+except ImportError:
+    from models import BpaRunResult, BpaSummary, BpaFinding, AiReadinessResult, AiReadinessMetrics, ModelDiffResult, ModelDiffSummary  # type: ignore[no-redef]
+
 SEVERITY_ORDER = {"error": 3, "warning": 2, "info": 1}
 
 
@@ -217,10 +222,10 @@ DEFAULT_BPA_RULES = [
 ]
 
 
-def run_bpa(model: Dict[str, Any], rules=None, categories=None, min_severity="info") -> Dict[str, Any]:
+def run_bpa(model: Dict[str, Any], rules=None, categories=None, min_severity="info") -> BpaRunResult:
     """Run the Best Practice Analyzer over a normalized model dict.
 
-    Returns {"summary": {...}, "findings": [ {rule_id, name, category, severity, object, detail} ]}.
+    Returns BpaRunResult with summary and findings.
     """
     rules = rules or DEFAULT_BPA_RULES
     min_rank = SEVERITY_ORDER.get(min_severity, 1)
@@ -253,14 +258,18 @@ def run_bpa(model: Dict[str, Any], rules=None, categories=None, min_severity="in
     for f in findings:
         by_sev[f["severity"]] = by_sev.get(f["severity"], 0) + 1
         by_cat[f["category"]] = by_cat.get(f["category"], 0) + 1
-    return {
-        "summary": {"total": len(findings), "by_severity": by_sev, "by_category": by_cat,
-                    "rules_run": len([r for r in rules if not cat_filter or r["category"].lower() in cat_filter])},
-        "findings": findings,
-    }
+    return BpaRunResult(
+        summary=BpaSummary(
+            total=len(findings),
+            by_severity=by_sev,
+            by_category=by_cat,
+            rules_run=len([r for r in rules if not cat_filter or r["category"].lower() in cat_filter]),
+        ),
+        findings=[BpaFinding(**f) for f in findings],
+    )
 
 
-def audit_ai_readiness(model: Dict[str, Any]) -> Dict[str, Any]:
+def audit_ai_readiness(model: Dict[str, Any]) -> AiReadinessResult:
     """Score how 'AI-ready' a model is (descriptions, formats, hidden technical columns).
 
     Better-described, well-formatted models produce better Copilot / data-agent / LLM output.
@@ -312,7 +321,12 @@ def audit_ai_readiness(model: Dict[str, Any]) -> Dict[str, Any]:
         recs.append("Model is well documented. Consider adding synonyms / verified answers for Copilot.")
 
     grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 40 else "F"
-    return {"score": score, "grade": grade, "metrics": metrics, "recommendations": recs}
+    return AiReadinessResult(
+        score=score,
+        grade=grade,
+        metrics=AiReadinessMetrics(**metrics),
+        recommendations=recs,
+    )
 
 
 def dax_test_verdict(actual, expected, tolerance=0):
@@ -330,10 +344,10 @@ def dax_test_verdict(actual, expected, tolerance=0):
     return str(actual) == str(expected), f"{actual!r} vs expected {expected!r}"
 
 
-def diff_models(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
+def diff_models(before: Dict[str, Any], after: Dict[str, Any]) -> ModelDiffResult:
     """Compute a human-readable semantic diff between two normalized model dicts.
 
-    Returns {"has_changes", "total_changes", "summary" (dict of counts), "markdown"}.
+    Returns ModelDiffResult with has_changes, total_changes, summary, and markdown.
     Pure function - used for PR/CI 'what changed' summaries and pre-deploy review.
     """
     def tindex(m):
@@ -407,7 +421,12 @@ def diff_models(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]
         section("Relationships added", rel_added, "+")
         section("Relationships removed", rel_removed, "-")
 
-    return {"has_changes": total > 0, "total_changes": total, "summary": summary, "markdown": "\n".join(lines)}
+    return ModelDiffResult(
+        has_changes=total > 0,
+        total_changes=total,
+        summary=ModelDiffSummary(**summary),
+        markdown="\n".join(lines),
+    )
 
 
 def _md_escape(s) -> str:
@@ -431,7 +450,7 @@ def render_data_dictionary(model: Dict[str, Any], fmt: str = "markdown") -> str:
     lines.append("")
     lines.append(f"- Tables: **{len(tables)}**  |  Columns: **{total_columns}**  |  "
                  f"Measures: **{total_measures}**  |  Relationships: **{len(rels)}**")
-    lines.append(f"- Documentation / AI-readiness score: **{ai['score']}/100 (grade {ai['grade']})**")
+    lines.append(f"- Documentation / AI-readiness score: **{ai.score}/100 (grade {ai.grade})**")
     lines.append("")
 
     for t in sorted(tables, key=lambda x: str(x.get("name", "")).lower()):

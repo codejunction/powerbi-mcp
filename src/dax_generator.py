@@ -12,11 +12,16 @@ Consumed by the generate_measure_suite tool, which can return the suite as DAX, 
 offline into a PBIP project's TMDL (tmdl_authoring), or create it live via TOM.
 
 Entry point:
-    generate_suite(kind, **params) -> List[{name, expression, format_string, display_folder, description}]
+    generate_suite(kind, **params) -> List[MeasureDefinition]
 Kinds: "time_intelligence", "ratios", "ranking", "column_stats".
 """
 import re
 from typing import Any, Dict, List, Optional
+
+try:
+    from .models import MeasureDefinition
+except ImportError:
+    from models import MeasureDefinition  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------- reference helpers
 
@@ -73,9 +78,9 @@ def split_column_ref(ref: str):
     return tbl.strip().strip("'"), rest.rstrip("]")
 
 
-def _m(name, expression, format_string, folder, description) -> Dict[str, Any]:
-    return {"name": name, "expression": expression, "format_string": format_string,
-            "display_folder": folder, "description": description}
+def _m(name, expression, format_string, folder, description) -> MeasureDefinition:
+    return MeasureDefinition(name=name, expression=expression, format_string=format_string,
+                             display_folder=folder, description=description)
 
 
 # ---------------------------------------------------------------- time intelligence
@@ -165,7 +170,7 @@ DEFAULT_TI_VARIANTS = ["ytd", "qtd", "mtd", "py", "yoy", "yoy_pct", "mom_pct", "
 def generate_time_intelligence(base_measure: str, date_column: str,
                                variants: Optional[List[str]] = None,
                                display_folder: Optional[str] = None,
-                               base_format: Optional[str] = None) -> List[Dict[str, Any]]:
+                               base_format: Optional[str] = None) -> List[MeasureDefinition]:
     """Expand a base measure into time-intelligence measures over a date column.
 
     base_format is applied where a variant inherits the base's format (pass the base
@@ -175,7 +180,7 @@ def generate_time_intelligence(base_measure: str, date_column: str,
     base = bare_name(base_measure)
     d = column_ref(date_column)
     folder = display_folder or f"Time Intelligence\\{base}"
-    out: List[Dict[str, Any]] = []
+    out: List[MeasureDefinition] = []
     unknown = [v for v in (variants or DEFAULT_TI_VARIANTS) if v not in TIME_INTELLIGENCE_VARIANTS]
     if unknown:
         raise ValueError(f"Unknown time-intelligence variant(s): {', '.join(unknown)}. "
@@ -196,13 +201,13 @@ def generate_time_intelligence(base_measure: str, date_column: str,
 
 def generate_ratios(base_measure: str, dimension_columns: List[str],
                     display_folder: Optional[str] = None,
-                    include_all_selected: bool = True) -> List[Dict[str, Any]]:
+                    include_all_selected: bool = True) -> List[MeasureDefinition]:
     """Share-of-total measures: base as a % of the total over each dimension column
     (ALL = grand total ignoring that filter; ALLSELECTED = % of the visible total)."""
     b = measure_ref(base_measure)
     base = bare_name(base_measure)
     folder = display_folder or f"Ratios\\{base}"
-    out: List[Dict[str, Any]] = []
+    out: List[MeasureDefinition] = []
     for dim in dimension_columns:
         d = column_ref(dim)
         _, col = split_column_ref(dim)
@@ -223,12 +228,12 @@ def generate_ratios(base_measure: str, dimension_columns: List[str],
 
 
 def generate_ranking(base_measure: str, dimension_columns: List[str],
-                     display_folder: Optional[str] = None) -> List[Dict[str, Any]]:
+                     display_folder: Optional[str] = None) -> List[MeasureDefinition]:
     """Rank of the current dimension member by the base measure (dense, descending)."""
     b = measure_ref(base_measure)
     base = bare_name(base_measure)
     folder = display_folder or f"Ranking\\{base}"
-    out: List[Dict[str, Any]] = []
+    out: List[MeasureDefinition] = []
     for dim in dimension_columns:
         d = column_ref(dim)
         _, col = split_column_ref(dim)
@@ -243,7 +248,7 @@ def generate_ranking(base_measure: str, dimension_columns: List[str],
 
 
 def generate_column_stats(column: str, display_folder: Optional[str] = None,
-                          stats: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                          stats: Optional[List[str]] = None) -> List[MeasureDefinition]:
     """Basic statistical measures over a numeric column: sum/avg/min/max/median/distinct."""
     d = column_ref(column)
     _, col = split_column_ref(column)
@@ -260,7 +265,7 @@ def generate_column_stats(column: str, display_folder: Optional[str] = None,
     unknown = [s for s in chosen if s not in templates]
     if unknown:
         raise ValueError(f"Unknown stat(s): {', '.join(unknown)}. Valid: {', '.join(sorted(templates))}")
-    out: List[Dict[str, Any]] = []
+    out: List[MeasureDefinition] = []
     for s in chosen:
         name, expr, desc = templates[s]
         out.append(_m(name, expr, "0" if s == "distinct" else None, folder, desc.format(col=col)))
@@ -269,7 +274,7 @@ def generate_column_stats(column: str, display_folder: Optional[str] = None,
 
 # ---------------------------------------------------------------- dispatcher
 
-def generate_suite(kind: str, **params) -> List[Dict[str, Any]]:
+def generate_suite(kind: str, **params) -> List[MeasureDefinition]:
     """Dispatch to a generator by kind."""
     kind = (kind or "").lower()
     if kind in ("time_intelligence", "time", "ti"):

@@ -8,6 +8,11 @@ into a named root cause and a concrete fix. Pure data + matching (no I/O).
 import re
 from typing import Any, Dict, List, Optional
 
+try:
+    from .models import RefreshDiagnosis
+except ImportError:
+    from models import RefreshDiagnosis  # type: ignore[no-redef]
+
 # Each rule: id, match (substrings/regex, case-insensitive), cause, remediation.
 REFRESH_ERROR_RULES: List[Dict[str, Any]] = [
     {
@@ -63,22 +68,22 @@ REFRESH_ERROR_RULES: List[Dict[str, Any]] = [
 CONSECUTIVE_FAILURE_DISABLE_THRESHOLD = 4  # Power BI auto-disables a schedule after 4 consecutive failures.
 
 
-def classify_refresh_error(error_text: Optional[str]) -> Dict[str, Any]:
+def classify_refresh_error(error_text: Optional[str]) -> RefreshDiagnosis:
     """Classify a refresh error message into a known cause + remediation.
 
     Returns {"id", "cause", "remediation", "matched"}; falls back to 'unknown'.
     """
     text = (error_text or "").lower()
     if not text.strip():
-        return {"id": "none", "cause": "No error text provided.", "remediation": "", "matched": False}
+        return RefreshDiagnosis(id="none", cause="No error text provided.", remediation="", matched=False)
     for rule in REFRESH_ERROR_RULES:
         for token in rule["match"]:
             t = token.lower()
             if t in text or re.search(re.escape(t), text):
-                return {"id": rule["id"], "cause": rule["cause"], "remediation": rule["remediation"], "matched": True}
-    return {
-        "id": "unknown",
-        "cause": "Unrecognized refresh error.",
-        "remediation": "Inspect the full error JSON; check data source credentials, gateway status, and the Power Query steps.",
-        "matched": False,
-    }
+                return RefreshDiagnosis(id=rule["id"], cause=rule["cause"], remediation=rule["remediation"], matched=True)
+    return RefreshDiagnosis(
+        id="unknown",
+        cause="Unrecognized refresh error.",
+        remediation="Inspect the full error JSON; check data source credentials, gateway status, and the Power Query steps.",
+        matched=False,
+    )

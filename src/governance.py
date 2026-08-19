@@ -7,8 +7,13 @@ scanResult JSON in here.
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
+try:
+    from .models import CrossWorkspaceLineageResult, UsageAnalyticsResult, ActivityCount
+except ImportError:
+    from models import CrossWorkspaceLineageResult, UsageAnalyticsResult, ActivityCount  # type: ignore[no-redef]
 
-def summarize_scan(scan: Dict[str, Any], dataset_name: Optional[str] = None) -> Dict[str, Any]:
+
+def summarize_scan(scan: Dict[str, Any], dataset_name: Optional[str] = None) -> CrossWorkspaceLineageResult:
     """Summarize a Scanner API scanResult into a tenant inventory + lineage answer.
 
     Returns counts, datasets missing RLS roles, sensitivity-label coverage, and - when
@@ -38,13 +43,13 @@ def summarize_scan(scan: Dict[str, Any], dataset_name: Optional[str] = None) -> 
     no_rls = [f"{d['workspace']}/{d['name']}" for d in datasets if not d["roles"]]
     unlabeled = [f"{d['workspace']}/{d['name']}" for d in datasets if not d.get("sensitivityLabel")]
 
-    summary: Dict[str, Any] = {
-        "workspaces": len(workspaces),
-        "datasets": len(datasets),
-        "reports": len(reports),
-        "datasets_without_rls": no_rls,
-        "datasets_without_sensitivity_label": unlabeled,
-    }
+    result = CrossWorkspaceLineageResult(
+        workspaces=len(workspaces),
+        datasets=len(datasets),
+        reports=len(reports),
+        datasets_without_rls=no_rls,
+        datasets_without_sensitivity_label=unlabeled,
+    )
 
     if dataset_name:
         targets = [d for d in datasets if d.get("name") == dataset_name]
@@ -53,14 +58,21 @@ def summarize_scan(scan: Dict[str, Any], dataset_name: Optional[str] = None) -> 
         for r in reports:
             if r.get("datasetId") in target_ids:
                 downstream.append(f"{r['workspace']}/{r['name']}")
-        summary["focus_dataset"] = dataset_name
-        summary["focus_found_in"] = [d["workspace"] for d in targets]
-        summary["downstream_reports"] = downstream
+        result = CrossWorkspaceLineageResult(
+            workspaces=len(workspaces),
+            datasets=len(datasets),
+            reports=len(reports),
+            datasets_without_rls=no_rls,
+            datasets_without_sensitivity_label=unlabeled,
+            focus_dataset=dataset_name,
+            focus_found_in=[d["workspace"] for d in targets],
+            downstream_reports=downstream,
+        )
 
-    return summary
+    return result
 
 
-def aggregate_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+def aggregate_activity(events: List[Dict[str, Any]]) -> UsageAnalyticsResult:
     """Aggregate Admin Activity Events (M365 Power BI schema, PascalCase fields) into a usage
     summary: counts by activity, top users, top viewed reports, distinct users."""
     by_activity: Counter = Counter()
@@ -77,10 +89,10 @@ def aggregate_activity(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             report = e.get("ReportName") or e.get("ReportId")
             if report:
                 report_views[report] += 1
-    return {
-        "total_events": len(events),
-        "distinct_users": len(by_user),
-        "by_activity": by_activity.most_common(25),
-        "top_users": by_user.most_common(25),
-        "top_reports_by_views": report_views.most_common(25),
-    }
+    return UsageAnalyticsResult(
+        total_events=len(events),
+        distinct_users=len(by_user),
+        by_activity=[ActivityCount(name=k, count=v) for k, v in by_activity.most_common(25)],
+        top_users=[ActivityCount(name=k, count=v) for k, v in by_user.most_common(25)],
+        top_reports_by_views=[ActivityCount(name=k, count=v) for k, v in report_views.most_common(25)],
+    )

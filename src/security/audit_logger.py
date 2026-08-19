@@ -14,6 +14,11 @@ from enum import Enum
 import hashlib
 import hmac
 
+try:
+    from ..models import AuditIntegrityResult, AuditSessionSummary
+except ImportError:
+    from models import AuditIntegrityResult, AuditSessionSummary  # type: ignore[no-redef]
+
 logger = logging.getLogger(__name__)
 
 # Connection-string / credential patterns scrubbed from any text persisted to the audit log,
@@ -147,28 +152,28 @@ class AuditLogger:
             pass
         return None
 
-    def verify_chain(self) -> Dict[str, Any]:
+    def verify_chain(self) -> AuditIntegrityResult:
         """Verify the tamper-evident hash chain of the current audit log.
 
-        Returns {valid, checked, broken_line?, message}. Detects edits (hash mismatch)
+        Returns AuditIntegrityResult. Detects edits (hash mismatch)
         and insertions/deletions (linkage break). Only the current (un-rotated) file is checked.
         """
         if not self.log_file.exists():
-            return {"valid": True, "checked": 0, "message": "No audit log file yet."}
+            return AuditIntegrityResult(valid=True, checked=0, message="No audit log file yet.")
         with self._lock:
             try:
                 with open(self.log_file, 'r', encoding='utf-8') as f:
                     raw = [(i, ln.strip()) for i, ln in enumerate(f, 1) if ln.strip()]
             except Exception as e:
-                return {"valid": False, "checked": 0, "message": f"Verification error: {e}"}
+                return AuditIntegrityResult(valid=False, checked=0, message=f"Verification error: {e}")
 
         events = []
         for i, ln in raw:
             try:
                 events.append((i, json.loads(ln)))
             except Exception:
-                return {"valid": False, "checked": len(events), "broken_line": i,
-                        "message": f"Line {i} is not valid JSON (corrupted)."}
+                return AuditIntegrityResult(valid=False, checked=len(events), broken_line=i,
+                                            message=f"Line {i} is not valid JSON (corrupted).")
 
         # If ANY entry carries a hash, the file is a chained log and EVERY entry must carry a
         # valid hash. This closes the bypass where stripping a single entry's hash (even the
@@ -180,20 +185,20 @@ class AuditLogger:
             stored = ev.get("entry_hash")
             if stored is None:
                 if chain_active:
-                    return {"valid": False, "checked": checked, "broken_line": i,
-                            "message": f"Line {i} is missing entry_hash (tampering: stripped from a chained log)."}
+                    return AuditIntegrityResult(valid=False, checked=checked, broken_line=i,
+                                                message=f"Line {i} is missing entry_hash (tampering: stripped from a chained log).")
                 checked += 1  # genuine legacy file: no hashes anywhere
                 continue
             recomputed = self._hash_event({k: v for k, v in ev.items() if k != "entry_hash"})
             if recomputed != stored:
-                return {"valid": False, "checked": checked, "broken_line": i,
-                        "message": f"Line {i} entry_hash mismatch - the entry was modified."}
+                return AuditIntegrityResult(valid=False, checked=checked, broken_line=i,
+                                            message=f"Line {i} entry_hash mismatch - the entry was modified.")
             if prev_entry_hash is not None and ev.get("prev_hash") != prev_entry_hash:
-                return {"valid": False, "checked": checked, "broken_line": i,
-                        "message": f"Line {i} chain linkage broken - an entry was inserted or deleted."}
+                return AuditIntegrityResult(valid=False, checked=checked, broken_line=i,
+                                            message=f"Line {i} chain linkage broken - an entry was inserted or deleted.")
             prev_entry_hash = stored
             checked += 1
-        return {"valid": True, "checked": checked, "message": f"Chain intact across {checked} entr(ies)."}
+        return AuditIntegrityResult(valid=True, checked=checked, message=f"Chain intact across {checked} entr(ies).")
 
     def _generate_session_id(self) -> str:
         """Generate a unique session ID"""
@@ -459,13 +464,13 @@ class AuditLogger:
             }
         )
 
-    def get_session_summary(self) -> Dict[str, Any]:
+    def get_session_summary(self) -> AuditSessionSummary:
         """Get a summary of the current session"""
-        return {
-            'session_id': self._session_id,
-            'query_count': self._query_count,
-            'log_file': str(self.log_file)
-        }
+        return AuditSessionSummary(
+            session_id=self._session_id,
+            query_count=self._query_count,
+            log_file=str(self.log_file),
+        )
 
     def get_recent_events(self, count: int = 100) -> List[Dict[str, Any]]:
         """Read recent events from the log file"""

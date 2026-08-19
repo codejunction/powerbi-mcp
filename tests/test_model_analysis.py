@@ -55,13 +55,13 @@ MODEL = {
 
 
 def has_rule(findings, rule_id, obj_contains=None):
-    return any(f["rule_id"] == rule_id and (obj_contains is None or obj_contains in (f["object"] or "")) for f in findings)
+    return any(f.rule_id == rule_id and (obj_contains is None or obj_contains in (f.object or "")) for f in findings)
 
 
 def test_bpa():
     print("\n== run_bpa ==")
     res = run_bpa(MODEL)
-    f = res["findings"]
+    f = res.findings
     check("float column flagged", has_rule(f, "PERF_FLOAT_COLUMN", "Sales[Amount]"))
     check("calculated column flagged", has_rule(f, "PERF_CALC_COLUMN", "Sales[Bucket]"))
     check("bidirectional flagged", has_rule(f, "PERF_BIDIRECTIONAL"))
@@ -72,22 +72,22 @@ def test_bpa():
     check("no-description measure flagged", has_rule(f, "MAINT_MEASURE_NO_DESC", "Margin %"))
     check("no-description column flagged", has_rule(f, "MAINT_COLUMN_NO_DESC", "Sales[Amount]"))
     check("rel type mismatch flagged", has_rule(f, "ERR_REL_TYPE_MISMATCH"))
-    check("summary counts present", res["summary"]["total"] == len(f) and res["summary"]["by_severity"]["error"] >= 1)
+    check("summary counts present", res.summary.total == len(f) and res.summary.by_severity.get("error", 0) >= 1)
 
     # category + severity filters
     only_dax = run_bpa(MODEL, categories=["DAX"])
-    check("category filter works", all(x["category"] == "DAX" for x in only_dax["findings"]) and only_dax["findings"])
+    check("category filter works", all(x.category == "DAX" for x in only_dax.findings) and only_dax.findings)
     warns = run_bpa(MODEL, min_severity="warning")
-    check("severity filter works", all(x["severity"] in ("warning", "error") for x in warns["findings"]))
+    check("severity filter works", all(x.severity in ("warning", "error") for x in warns.findings))
 
 
 def test_ai_readiness():
     print("\n== audit_ai_readiness ==")
     r = audit_ai_readiness(MODEL)
-    check("score is 0-100", 0 <= r["score"] <= 100, str(r["score"]))
-    check("grade present", r["grade"] in list("ABCDF"))
-    check("metrics present", "measures_with_description_pct" in r["metrics"])
-    check("recommends measure descriptions", any("description" in rec.lower() for rec in r["recommendations"]))
+    check("score is 0-100", 0 <= r.score <= 100, str(r.score))
+    check("grade present", r.grade in list("ABCDF"))
+    check("metrics present", r.metrics.measures_with_description_pct is not None)
+    check("recommends measure descriptions", any("description" in rec.lower() for rec in r.recommendations))
 
     # A fully documented model should score higher
     good = {
@@ -96,7 +96,7 @@ def test_ai_readiness():
             "measures": [{"name": "M", "expression": "1", "format_string": "0", "description": "m", "is_hidden": False}]}],
         "relationships": [],
     }
-    check("documented model scores higher", audit_ai_readiness(good)["score"] > r["score"])
+    check("documented model scores higher", audit_ai_readiness(good).score > r.score)
 
 
 def test_data_dictionary():
@@ -114,8 +114,8 @@ def test_data_dictionary():
 def test_diff_models():
     print("\n== diff_models ==")
     same = diff_models(MODEL, MODEL)
-    check("identical -> no changes", same["has_changes"] is False and same["total_changes"] == 0)
-    check("identical markdown says so", "No semantic changes" in same["markdown"])
+    check("identical -> no changes", same.has_changes is False and same.total_changes == 0)
+    check("identical markdown says so", "No semantic changes" in same.markdown)
 
     import copy
     after = copy.deepcopy(MODEL)
@@ -124,10 +124,10 @@ def test_diff_models():
     after["tables"][0]["columns"] = [c for c in after["tables"][0]["columns"] if c["name"] != "Qty"]
     after["tables"][0]["measures"][0]["expression"] = "SUM(Sales[Amount]) * 2"
     d = diff_models(MODEL, after)
-    check("detects changes", d["has_changes"] is True)
-    check("measure added", "Sales[New Measure]" in d["markdown"])
-    check("column removed", "Sales[Qty]" in d["markdown"])
-    check("measure changed", d["summary"]["measures_changed"] >= 1, str(d["summary"]))
+    check("detects changes", d.has_changes is True)
+    check("measure added", "Sales[New Measure]" in d.markdown)
+    check("column removed", "Sales[Qty]" in d.markdown)
+    check("measure changed", d.summary.measures_changed >= 1, str(d.summary))
 
 
 if __name__ == "__main__":

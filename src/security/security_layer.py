@@ -10,6 +10,16 @@ from typing import Any, Dict, List, Optional, Tuple
 from .pii_detector import PIIDetector, MaskingStrategy
 from .audit_logger import AuditLogger, get_audit_logger
 from .access_policy import AccessPolicyEngine, PolicyAction, PolicyCheckResult
+try:
+    from ..models import (
+        AuditIntegrityResult, SecurityLayerStatus, PolicySummary, SecurityReport,
+        EnabledFeatures, PiiDetectorStatus, PoliciesStatus,
+    )
+except ImportError:
+    from models import (  # type: ignore[no-redef]
+        AuditIntegrityResult, SecurityLayerStatus, PolicySummary, SecurityReport,
+        EnabledFeatures, PiiDetectorStatus, PoliciesStatus,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +161,7 @@ class SecurityLayer:
         duration_ms: Optional[float] = None,
         success: bool = True,
         error_message: Optional[str] = None
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], SecurityReport]:
         """
         Process query results through security layer
 
@@ -171,14 +181,12 @@ class SecurityLayer:
         """
         start_time = time.time()
         processed_results = results
-        security_report = {
-            'pii_detected': False,
-            'pii_count': 0,
-            'pii_types': [],
-            'policy_applied': False,
-            'columns_masked': [],
-            'columns_blocked': []
-        }
+        pii_detected = False
+        pii_count = 0
+        pii_types: List[str] = []
+        policy_applied = False
+        columns_masked: List[str] = []
+        columns_blocked: List[str] = []
 
         # Apply access policies
         if self.enable_policies and self.policy_engine and results:
@@ -186,16 +194,16 @@ class SecurityLayer:
                 processed_results,
                 table_name=table_name
             )
-            security_report['policy_applied'] = policy_report.get('applied', False)
-            security_report['columns_blocked'] = policy_report.get('blocked_columns', [])
+            policy_applied = policy_report.get('applied', False)
+            columns_blocked = policy_report.get('blocked_columns', [])
 
         # Apply PII detection and masking
         if self.enable_pii_detection and self.pii_detector and processed_results:
             processed_results, pii_summary = self.pii_detector.process_results(processed_results)
-            security_report['pii_detected'] = pii_summary['total_detections'] > 0
-            security_report['pii_count'] = pii_summary['total_detections']
-            security_report['pii_types'] = pii_summary['types_detected']
-            security_report['columns_masked'].extend(
+            pii_detected = pii_summary['total_detections'] > 0
+            pii_count = pii_summary['total_detections']
+            pii_types = pii_summary['types_detected']
+            columns_masked.extend(
                 [d.get('column', '') for d in pii_summary.get('detections', [])]
             )
 
@@ -212,24 +220,30 @@ class SecurityLayer:
                 duration_ms=duration_ms,
                 success=success,
                 error_message=error_message,
-                pii_detected=security_report['pii_detected'],
-                pii_types=security_report['pii_types'],
-                pii_count=security_report['pii_count'],
-                policy_applied=table_name if security_report['policy_applied'] else None
+                pii_detected=pii_detected,
+                pii_types=pii_types,
+                pii_count=pii_count,
+                policy_applied=table_name if policy_applied else None
             )
 
             # Log PII detection event separately if detected
-            if security_report['pii_detected']:
+            if pii_detected:
                 self.audit_logger.log_pii_detection(
-                    pii_types=security_report['pii_types'],
-                    count=security_report['pii_count'],
-                    columns_affected=list(set(security_report['columns_masked'])),
+                    pii_types=pii_types,
+                    count=pii_count,
+                    columns_affected=list(set(columns_masked)),
                     action_taken='masked'
                 )
 
-        security_report['processing_time_ms'] = processing_time
-
-        return processed_results, security_report
+        return processed_results, SecurityReport(
+            pii_detected=pii_detected,
+            pii_count=pii_count,
+            pii_types=pii_types,
+            policy_applied=policy_applied,
+            columns_masked=columns_masked,
+            columns_blocked=columns_blocked,
+            processing_time_ms=processing_time,
+        )
 
     def log_connection(
         self,
@@ -270,45 +284,44 @@ class SecurityLayer:
                 query=query
             )
 
-    def verify_audit_integrity(self) -> Dict[str, Any]:
+    def verify_audit_integrity(self) -> AuditIntegrityResult:
         """Verify the tamper-evident hash chain of the audit log."""
         if not self.enable_audit or not self.audit_logger:
-            return {"valid": True, "checked": 0, "message": "Audit logging is disabled."}
+            return AuditIntegrityResult(valid=True, checked=0, message="Audit logging is disabled.")
         return self.audit_logger.verify_chain()
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> SecurityLayerStatus:
         """Get current security layer status"""
-        status = {
-            'enabled': {
-                'pii_detection': self.enable_pii_detection,
-                'audit_logging': self.enable_audit,
-                'access_policies': self.enable_policies
-            },
-            'pii_detector': {
-                'strategy': self.pii_detector.default_strategy.value if self.pii_detector else None,
-                'enabled_types': [t.value for t in self.pii_detector.enabled_types] if self.pii_detector else []
-            },
-            'audit': self.audit_logger.get_session_summary() if self.audit_logger else None,
-            'policies': {
-                'table_count': len(self.policy_engine.table_policies) if self.policy_engine else 0,
-                'global_enabled': self.policy_engine.global_policy.enabled if self.policy_engine else False
-            }
-        }
-        return status
+        return SecurityLayerStatus(
+            enabled=EnabledFeatures(
+                pii_detection=self.enable_pii_detection,
+                audit_logging=self.enable_audit,
+                access_policies=self.enable_policies,
+            ),
+            pii_detector=PiiDetectorStatus(
+                strategy=self.pii_detector.default_strategy.value if self.pii_detector else None,
+                enabled_types=[t.value for t in self.pii_detector.enabled_types] if self.pii_detector else [],
+            ),
+            audit=self.audit_logger.get_session_summary() if self.audit_logger else None,
+            policies=PoliciesStatus(
+                table_count=len(self.policy_engine.table_policies) if self.policy_engine else 0,
+                global_enabled=self.policy_engine.global_policy.enabled if self.policy_engine else False,
+            ),
+        )
 
-    def get_policy_summary(self) -> Dict[str, Any]:
+    def get_policy_summary(self) -> PolicySummary:
         """Get summary of active policies"""
         if not self.policy_engine:
-            return {'enabled': False}
+            return PolicySummary(enabled=False)
 
-        return {
-            'enabled': self.policy_engine.global_policy.enabled,
-            'max_rows': self.policy_engine.global_policy.max_rows_per_query,
-            'pii_detection': self.policy_engine.global_policy.enable_pii_detection,
-            'pii_action': self.policy_engine.global_policy.pii_default_action.value,
-            'tables_with_policies': list(self.policy_engine.table_policies.keys()),
-            'blocked_patterns_count': len(self.policy_engine.global_policy.blocked_patterns)
-        }
+        return PolicySummary(
+            enabled=self.policy_engine.global_policy.enabled,
+            max_rows=self.policy_engine.global_policy.max_rows_per_query,
+            pii_detection=self.policy_engine.global_policy.enable_pii_detection,
+            pii_action=self.policy_engine.global_policy.pii_default_action.value,
+            tables_with_policies=list(self.policy_engine.table_policies.keys()),
+            blocked_patterns_count=len(self.policy_engine.global_policy.blocked_patterns),
+        )
 
 
 # Global security layer instance
