@@ -9,7 +9,7 @@ from typing import Optional
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server import FastMCP
 from pydantic import BaseModel
 
 from powerbi_rest_connector import PowerBIRestConnector
