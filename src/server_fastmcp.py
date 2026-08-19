@@ -13,11 +13,12 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from powerbi_rest_connector import PowerBIRestConnector
 from security import SecurityLayer
@@ -67,10 +68,39 @@ import refresh_diagnostics as _refresh_diag_mod
 from governance import summarize_scan, aggregate_activity
 from model_analysis import run_bpa as run_bpa_fn, audit_ai_readiness as ai_readiness_fn
 
-load_dotenv()
+
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
+class ServerSettings(BaseSettings):
+    """Runtime configuration loaded from environment and repo .env."""
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
+
+    tenant_id: str = Field(default="", alias="TENANT_ID")
+    client_id: str = Field(default="", alias="CLIENT_ID")
+    client_secret: SecretStr | None = Field(default=None, alias="CLIENT_SECRET")
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    token_ttl_minutes: int = Field(default=20, alias="TOKEN_TTL_MINUTES")
+    enable_pii_detection: bool = Field(default=True, alias="ENABLE_PII_DETECTION")
+    enable_audit: bool = Field(default=True, alias="ENABLE_AUDIT")
+    enable_policies: bool = Field(default=True, alias="ENABLE_POLICIES")
+    host: str = Field(default="0.0.0.0", alias="HOST")
+    port: int = Field(default=8000, alias="PORT")
+
+    def has_rest_credentials(self) -> bool:
+        return bool(
+            self.tenant_id
+            and self.client_id
+            and self.client_secret
+            and self.client_secret.get_secret_value()
+        )
+
+
+_settings = ServerSettings()
+
 
 logging.basicConfig(
-    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO")),
+    level=getattr(logging, _settings.log_level.upper(), logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("powerbi-mcp")
@@ -96,14 +126,15 @@ async def app_lifespan(mcp: FastMCP):
     global _app_context
     logger.info("Initializing Power BI MCP Server")
 
-    tenant_id = os.getenv("TENANT_ID", "")
-    client_id = os.getenv("CLIENT_ID", "")
-    client_secret = os.getenv("CLIENT_SECRET", "")
-
     conn: PowerBIRestConnector | None = None
-    if tenant_id and client_id and client_secret:
+    if _settings.has_rest_credentials():
         try:
-            conn = PowerBIRestConnector(tenant_id, client_id, client_secret)
+            conn = PowerBIRestConnector(
+                _settings.tenant_id,
+                _settings.client_id,
+                _settings.client_secret.get_secret_value() if _settings.client_secret else "",
+                token_ttl_minutes=_settings.token_ttl_minutes,
+            )
             conn.authenticate()
             logger.info("Successfully authenticated to Power BI Service")
         except Exception as e:
@@ -112,9 +143,9 @@ async def app_lifespan(mcp: FastMCP):
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "policies.yaml")
     security = SecurityLayer(
         config_path=config_path if os.path.exists(config_path) else None,
-        enable_pii_detection=os.getenv("ENABLE_PII_DETECTION", "true").lower() == "true",
-        enable_audit=os.getenv("ENABLE_AUDIT", "true").lower() == "true",
-        enable_policies=os.getenv("ENABLE_POLICIES", "true").lower() == "true",
+        enable_pii_detection=_settings.enable_pii_detection,
+        enable_audit=_settings.enable_audit,
+        enable_policies=_settings.enable_policies,
     )
 
     _app_context = AppContext(rest_connector=conn, security=security)
@@ -135,7 +166,7 @@ mcp = FastMCP("powerbi-mcp", lifespan=app_lifespan)
 def _conn() -> PowerBIRestConnector:
     """Return the live REST connector or raise."""
     if not _app_context or not _app_context.rest_connector:
-        raise ValueError("REST connector not initialized – check TENANT_ID/CLIENT_ID/CLIENT_SECRET")
+        raise ValueError("REST connector not initialized – check settings / TENANT_ID / CLIENT_ID / CLIENT_SECRET")
     return _app_context.rest_connector
 
 
@@ -1924,7 +1955,7 @@ if __name__ == "__main__":
         logger.info("Starting stdio server")
         mcp.run(transport="stdio")
     else:
-        host = os.getenv("HOST", "0.0.0.0")
-        port = int(os.getenv("PORT", "8000"))
+        host = _settings.host
+        port = _settings.port
         logger.info("Starting SSE server on %s:%s", host, port)
         mcp.run(transport="sse", host=host, port=port)
