@@ -23,8 +23,40 @@ from powerbi_rest_connector import PowerBIRestConnector
 from security import SecurityLayer
 from security.access_policy import AccessPolicyEngine
 from models import (
+    # discovery / listing
     WorkspaceInfo, DatasetInfo, TableInfo, ColumnInfo,
-    DaxResult, ValidationResult, SecurityStatus,
+    # DAX execution & validation
+    DaxResult, ValidationResult,
+    # model exploration
+    ModelSummaryResult, TableSummary,
+    SemanticModelDescription, SemanticModel, TableDetail, ColumnDetail, MeasureDetail, RelationshipDetail,
+    CandidateMeasure, QueryPlan, QueryPlanResult,
+    # model quality
+    BpaRunResult, BpaFinding, BpaSummary,
+    AiReadinessResult, AiReadinessMetrics,
+    DaxLintResult, DaxLintFinding, DaxLintSummary,
+    DaxRewriteResult, DaxRewrite,
+    # storage & performance
+    ModelStorageResult, TableStorageInfo,
+    QueryPerfResult, ModelDiffResult,
+    # governance & deployment
+    ReferentialIntegrityResult, ReferentialViolation,
+    PreDeployGateResult,
+    BpaValidateResult, BpaRuleIssue,
+    AuditIntegrityResult,
+    # diagnostics & ops
+    RefreshDoctorResult, RefreshDiagnosis,
+    UnusedObjectsResult,
+    ImpactAnalysisResult, DependentObject,
+    DaxTestRunResult, DaxTestCaseResult,
+    # fleet / governance ops
+    CrossWorkspaceLineageResult,
+    FleetRefreshResult, RefreshFailure,
+    UsageAnalyticsResult, ActivityCount,
+    # security & audit
+    SecurityStatus, AuditEvent,
+    # DAX generation
+    MeasureDefinition,
 )
 from errors import handle_error
 import dax_generator
@@ -132,6 +164,19 @@ def _row_get(row: dict[str, Any], *names: str) -> Any:
 def _norm(rows: list[dict]) -> list[dict]:
     """Strip bracket noise from INFO.VIEW.* result keys."""
     return [{str(k).strip("[]"): v for k, v in r.items()} for r in (rows or [])]
+
+
+def _agg_to_model(raw: dict) -> "UsageAnalyticsResult":
+    """Convert aggregate_activity() output (Counter.most_common tuples) to UsageAnalyticsResult."""
+    def _pairs(lst: list) -> list:
+        return [ActivityCount(name=str(n), count=int(c)) for n, c in (lst or [])]
+    return UsageAnalyticsResult(
+        total_events=raw["total_events"],
+        distinct_users=raw["distinct_users"],
+        by_activity=_pairs(raw.get("by_activity", [])),
+        top_users=_pairs(raw.get("top_users", [])),
+        top_reports_by_views=_pairs(raw.get("top_reports_by_views", [])),
+    )
 
 
 async def _gather_model(workspace_name: str, dataset_name: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -450,7 +495,7 @@ async def list_columns(workspace_name: str, dataset_name: str, table_name: str) 
 # ============================================================================
 
 @mcp.tool()
-async def get_model_info(workspace_name: str, dataset_name: str) -> dict:
+async def get_model_info(workspace_name: str, dataset_name: str) -> ModelSummaryResult:
     """Return a compact structural overview of a semantic model: tables, measure counts, and relationships.
 
     Lighter-weight than describe_semantic_model – use this to quickly size a model and
@@ -473,26 +518,26 @@ async def get_model_info(workspace_name: str, dataset_name: str) -> dict:
         if err:
             raise ValueError(err)
         visible = [t for t in model["tables"] if not model_analysis._truthy(t.get("is_hidden"))]
-        return {
-            "dataset": dataset_name,
-            "workspace": workspace_name,
-            "tables": [
-                {
-                    "name": t["name"],
-                    "columns": len(t.get("columns", [])),
-                    "measures": len(t.get("measures", [])),
-                    "top_measures": [m["name"] for m in t.get("measures", [])[:10]],
-                }
+        return ModelSummaryResult(
+            dataset=dataset_name,
+            workspace=workspace_name,
+            tables=[
+                TableSummary(
+                    name=t["name"],
+                    columns=len(t.get("columns", [])),
+                    measures=len(t.get("measures", [])),
+                    top_measures=[m["name"] for m in t.get("measures", [])[:10] if m.get("name")],
+                )
                 for t in visible
             ],
-            "relationships": len(model.get("relationships", [])),
-        }
+            relationships=len(model.get("relationships", [])),
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def describe_semantic_model(workspace_name: str, dataset_name: str) -> dict:
+async def describe_semantic_model(workspace_name: str, dataset_name: str) -> SemanticModelDescription:
     """Build a complete agent-ready semantic map of a Power BI model: tables, columns, measures, relationships.
 
     ALWAYS call this (or get_model_info) before writing DAX or answering business questions
@@ -538,24 +583,32 @@ async def describe_semantic_model(workspace_name: str, dataset_name: str) -> dic
                 "format_string": g(r, "FormatString"), "description": g(r, "Description") or "",
                 "is_hidden": bool(g(r, "IsHidden")),
             })
-        rels = [{
-            "from_table": g(r, "FromTable"), "from_column": g(r, "FromColumn"),
-            "to_table": g(r, "ToTable"), "to_column": g(r, "ToColumn"),
-            "is_active": g(r, "IsActive"),
-        } for r in meta.get("relationships", [])]
-        model = {"dataset": dataset_name, "tables": list(tables.values()), "relationships": rels}
-        visible_tables = [t for t in model["tables"] if not t.get("is_hidden")]
-        measures = [m for t in visible_tables for m in t.get("measures", []) if not m.get("is_hidden")]
-        return {
-            "model": model,
-            "summary": f"{len(visible_tables)} visible table(s), {len(measures)} visible measure(s), "
-                       f"{len(rels)} relationship(s)",
-            "guidance": [
+        rel_models = [RelationshipDetail(
+            from_table=g(r, "FromTable"), from_column=g(r, "FromColumn"),
+            to_table=g(r, "ToTable"), to_column=g(r, "ToColumn"),
+            is_active=g(r, "IsActive"),
+        ) for r in meta.get("relationships", [])]
+        table_models = [
+            TableDetail(
+                name=t["name"], is_hidden=t.get("is_hidden", False),
+                description=t.get("description", ""),
+                columns=[ColumnDetail(**c) for c in t.get("columns", [])],
+                measures=[MeasureDetail(**m) for m in t.get("measures", [])],
+            )
+            for t in tables.values()
+        ]
+        visible_tables = [t for t in table_models if not t.is_hidden]
+        measures_vis = [m for t in visible_tables for m in t.measures if not m.is_hidden]
+        return SemanticModelDescription(
+            model=SemanticModel(dataset=dataset_name, tables=table_models, relationships=rel_models),
+            summary=f"{len(visible_tables)} visible table(s), {len(measures_vis)} visible measure(s), "
+                    f"{len(rel_models)} relationship(s)",
+            guidance=[
                 "Use visible measures first for business metrics; generate DAX only when no suitable measure exists.",
                 "Use table/column descriptions and relationships to choose dimensions and filters.",
                 "All query execution is read-only through the Power BI REST Execute Queries API.",
             ],
-        }
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -567,7 +620,7 @@ async def answer_query_plan(
     question: str,
     execute: bool = False,
     max_rows: int = 100,
-) -> dict:
+) -> QueryPlanResult:
     """Given a natural-language question, find matching existing measures or draft a read-only DAX query.
 
     Use this when a user asks a business question against a Power BI model. The tool
@@ -592,35 +645,37 @@ async def answer_query_plan(
     """
     try:
         sem = await describe_semantic_model(workspace_name, dataset_name)
-        model = sem["model"]
+        model = sem.model
         qwords = {w.lower() for w in re.findall(r"[A-Za-z0-9_]+", question) if len(w) > 2}
-        candidates = []
-        for table in model.get("tables", []):
-            for m in table.get("measures", []):
-                hay = " ".join([m.get("name") or "", m.get("description") or "", table.get("name") or ""]).lower()
+        raw_candidates: list[dict[str, Any]] = []
+        for table in model.tables:
+            for m in table.measures:
+                hay = " ".join([m.name or "", m.description or "", table.name or ""]).lower()
                 score = sum(1 for w in qwords if w in hay)
                 if score:
-                    candidates.append({"table": table["name"], "measure": m["name"],
-                                       "score": score, "description": m.get("description")})
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        chosen = candidates[:5]
+                    raw_candidates.append({"table": table.name, "measure": m.name,
+                                           "score": score, "description": m.description})
+        raw_candidates.sort(key=lambda x: x["score"], reverse=True)
+        chosen = raw_candidates[:5]
         if chosen:
             draft_dax = f'EVALUATE ROW("{chosen[0]["measure"]}", [{chosen[0]["measure"]}])'
         else:
-            first = next((t for t in model["tables"] if not t.get("is_hidden")), None)
-            draft_dax = f"EVALUATE TOPN({max_rows}, '{first['name']}')" if first else None
-        plan = {
-            "question": question,
-            "candidate_measures": chosen,
-            "draft_dax": draft_dax,
-            "recommendation": "use_existing_measure" if chosen else "generate_exploratory_dax",
-        }
-        rows: list = []
+            first = next((t for t in model.tables if not t.is_hidden), None)
+            draft_dax = f"EVALUATE TOPN({max_rows}, '{first.name}')" if first else None
+        rows: list[dict[str, Any]] = []
         if execute and draft_dax:
             conn = _conn()
             wid, did = _resolve_ids(conn, workspace_name, dataset_name)
             rows = conn.execute_dax_query(wid, did, draft_dax)[:max_rows]
-        return {"plan": plan, "rows": rows}
+        return QueryPlanResult(
+            plan=QueryPlan(
+                question=question,
+                candidate_measures=[CandidateMeasure(**c) for c in chosen],
+                draft_dax=draft_dax,
+                recommendation="use_existing_measure" if chosen else "generate_exploratory_dax",
+            ),
+            rows=rows,
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -747,7 +802,7 @@ async def run_bpa(
     dataset_name: str,
     categories: list[str] | None = None,
     min_severity: str = "info",
-) -> dict:
+) -> BpaRunResult:
     """Run the built-in Best Practice Analyzer rules against a live semantic model.
 
     Fetches the full model metadata via INFO.VIEW.* and runs all BPA rules, reporting
@@ -776,13 +831,16 @@ async def run_bpa(
         if err:
             raise ValueError(err)
         result = run_bpa_fn(model, categories=categories, min_severity=min_severity)
-        return result
+        return BpaRunResult(
+            summary=BpaSummary(**result["summary"]),
+            findings=[BpaFinding(**f) for f in result["findings"]],
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def audit_ai_readiness(workspace_name: str, dataset_name: str) -> dict:
+async def audit_ai_readiness(workspace_name: str, dataset_name: str) -> AiReadinessResult:
     """Score a semantic model's readiness for AI/Copilot workloads (0–100).
 
     Evaluates description coverage for measures, columns, and tables, plus format string
@@ -806,7 +864,12 @@ async def audit_ai_readiness(workspace_name: str, dataset_name: str) -> dict:
         model, err = await _gather_model(workspace_name, dataset_name)
         if err:
             raise ValueError(err)
-        return ai_readiness_fn(model)
+        r = ai_readiness_fn(model)
+        return AiReadinessResult(
+            score=r["score"], grade=r["grade"],
+            metrics=AiReadinessMetrics(**r["metrics"]),
+            recommendations=r["recommendations"],
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -818,7 +881,7 @@ async def dax_lint(
     measure_name: str | None = None,
     expression: str | None = None,
     min_severity: str = "info",
-) -> dict:
+) -> DaxLintResult:
     """Static anti-pattern linter for DAX measure expressions.
 
     Scans for common DAX issues: unsafe division (use DIVIDE), FILTER over whole tables
@@ -852,9 +915,12 @@ async def dax_lint(
                 raise ValueError(err)
             measures = _measures_from_model(model, measure_name)
         result = _dax_lint_mod.lint_measures(measures)
-        result["findings"] = [f for f in result["findings"]
-                               if _dax_lint_mod.SEVERITY_RANK.get(f["severity"], 0) >= min_rank]
-        return result
+        findings = [f for f in result["findings"]
+                    if _dax_lint_mod.SEVERITY_RANK.get(f["severity"], 0) >= min_rank]
+        return DaxLintResult(
+            summary=DaxLintSummary(**result["summary"]),
+            findings=[DaxLintFinding(**f) for f in findings],
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -865,7 +931,7 @@ async def dax_suggest_rewrite(
     dataset_name: str,
     measure_name: str | None = None,
     expression: str | None = None,
-) -> dict:
+) -> DaxRewriteResult:
     """Generate concrete before/after rewrite pairs for auto-fixable DAX anti-patterns.
 
     Companion to dax_lint: where dax_lint flags issues, this tool produces the exact
@@ -896,13 +962,13 @@ async def dax_suggest_rewrite(
                 for h in _dax_lint_mod.suggest_rewrites(m["name"], m["expression"]):
                     h["object"] = m["name"]
                     rewrites.append(h)
-        return {"rewrites": rewrites, "count": len(rewrites)}
+        return DaxRewriteResult(rewrites=[DaxRewrite(**r) for r in rewrites], count=len(rewrites))
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def analyze_model_storage(workspace_name: str, dataset_name: str) -> dict:
+async def analyze_model_storage(workspace_name: str, dataset_name: str) -> ModelStorageResult:
     """Analyse per-table row counts to identify the largest fact tables in a semantic model.
 
     Issues a COUNTROWS DAX query per visible table and sorts the results largest-first.
@@ -943,19 +1009,19 @@ async def analyze_model_storage(workspace_name: str, dataset_name: str) -> dict:
                 rows_by_table[nm] = None
 
         ranked = sorted(visible, key=lambda t: (rows_by_table.get(t["name"]) or 0), reverse=True)
-        return {
-            "table_count": len(visible),
-            "total_rows": sum(v for v in rows_by_table.values() if v),
-            "tables": [
-                {
-                    "name": t["name"],
-                    "row_count": rows_by_table.get(t["name"]),
-                    "column_count": len(t.get("columns", [])),
-                    "measure_count": len(t.get("measures", [])),
-                }
+        return ModelStorageResult(
+            table_count=len(visible),
+            total_rows=sum(v for v in rows_by_table.values() if v),
+            tables=[
+                TableStorageInfo(
+                    name=t["name"],
+                    row_count=rows_by_table.get(t["name"]),
+                    column_count=len(t.get("columns", [])),
+                    measure_count=len(t.get("measures", [])),
+                )
                 for t in ranked[:50]
             ],
-        }
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -965,7 +1031,7 @@ async def analyze_query_performance(
     workspace_name: str,
     dataset_name: str,
     dax: str,
-) -> dict:
+) -> QueryPerfResult:
     """Time a DAX query end-to-end and surface heuristic optimization hints.
 
     Executes the query, measures wall-clock duration, and applies static pattern checks
@@ -1006,7 +1072,7 @@ async def analyze_query_performance(
         if not hints:
             hints.append("No obvious red flags. For storage-engine vs formula-engine timings, use DAX Studio Server Timings.")
 
-        return {"duration_ms": round(ms, 1), "row_count": row_count, "hints": hints}
+        return QueryPerfResult(duration_ms=round(ms, 1), row_count=row_count, hints=hints)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1016,7 +1082,7 @@ async def model_diff(
     workspace_name: str,
     dataset_name: str,
     baseline_path: str,
-) -> dict:
+) -> ModelDiffResult:
     """Compare a saved model snapshot against the current live model and report changes.
 
     Loads a JSON baseline (saved by serialising the output of get_model_info/describe_semantic_model
@@ -1047,7 +1113,7 @@ async def model_diff(
         after, err = await _gather_model(workspace_name, dataset_name)
         if err:
             raise ValueError(err)
-        return model_analysis.diff_models(before, after)
+        return ModelDiffResult(**model_analysis.diff_models(before, after))
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1057,7 +1123,7 @@ async def scan_referential_integrity(
     workspace_name: str,
     dataset_name: str,
     max_samples: int = 5,
-) -> dict:
+) -> ReferentialIntegrityResult:
     """Check every active relationship for orphan keys that would land in the blank row.
 
     For each active relationship, executes EXCEPT(DISTINCT(fact[FK]), DISTINCT(dim[PK]))
@@ -1117,8 +1183,12 @@ async def scan_referential_integrity(
                     pass
                 violations.append({"relationship": f"{ft}[{fc}] -> {tt}[{tc}]",
                                    "orphan_keys": count, "samples": samples})
-        return {"checked": checked, "violations": violations,
-                "clean": len([v for v in violations if v.get("orphan_keys", 0) > 0]) == 0}
+        clean = len([v for v in violations if v.get("orphan_keys", 0) > 0]) == 0
+        return ReferentialIntegrityResult(
+            checked=checked,
+            violations=[ReferentialViolation(**v) for v in violations],
+            clean=clean,
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1133,7 +1203,7 @@ async def pre_deploy_gate(
     dataset_name: str,
     min_ai_score: int = 60,
     block_on_warnings: bool = False,
-) -> dict:
+) -> PreDeployGateResult:
     """Run a combined BPA + AI-readiness quality gate and return a machine-readable PASS/FAIL.
 
     Fetches the live model, runs the Best Practice Analyzer and the AI-readiness audit,
@@ -1172,13 +1242,13 @@ async def pre_deploy_gate(
             and ai["score"] >= min_ai_score
             and (not block_on_warnings or len(warnings) == 0)
         )
-        return {
-            "passed": passed,
-            "bpa_errors": len(errors),
-            "bpa_warnings": len(warnings),
-            "ai_score": ai["score"],
-            "blocking": [f"{f['rule_id']}: {f['object']}" for f in errors],
-        }
+        return PreDeployGateResult(
+            passed=passed,
+            bpa_errors=len(errors),
+            bpa_warnings=len(warnings),
+            ai_score=ai["score"],
+            blocking=[f"{f['rule_id']}: {f['object']}" for f in errors],
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1187,7 +1257,7 @@ async def pre_deploy_gate(
 async def bpa_validate_rules(
     rules: str,
     fix: bool = False,
-) -> dict:
+) -> BpaValidateResult:
     """Validate a custom BPA rules JSON for structural and schema correctness.
 
     Use this before deploying custom BPA rules to catch missing required fields,
@@ -1208,13 +1278,20 @@ async def bpa_validate_rules(
         fix:   Attempt to auto-correct minor issues like missing fields (default: false)
     """
     try:
-        return _bpa_authoring_mod.validate_rules(rules, fix=fix)
+        r = _bpa_authoring_mod.validate_rules(rules, fix=fix)
+        return BpaValidateResult(
+            valid=r["valid"],
+            rule_count=r["rule_count"],
+            errors=[BpaRuleIssue(**e) for e in r.get("errors", [])],
+            warnings=[BpaRuleIssue(**w) for w in r.get("warnings", [])],
+            fixed_json=r.get("fixed_json"),
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def verify_audit_integrity() -> dict:
+async def verify_audit_integrity() -> AuditIntegrityResult:
     """Verify that the SHA-256 hash chain of the security audit log has not been tampered with.
 
     The audit log appends a running hash chain so any retroactive edit breaks all
@@ -1230,8 +1307,9 @@ async def verify_audit_integrity() -> dict:
     """
     try:
         if not _app_context or not _app_context.security:
-            return {"valid": True, "checked": 0, "message": "Security layer not active."}
-        return _app_context.security.verify_audit_integrity()
+            return AuditIntegrityResult(valid=True, checked=0, message="Security layer not active.")
+        r = _app_context.security.verify_audit_integrity()
+        return AuditIntegrityResult(**r)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1241,7 +1319,7 @@ async def verify_audit_integrity() -> dict:
 # ============================================================================
 
 @mcp.tool()
-async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: int = 10) -> dict:
+async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: int = 10) -> RefreshDoctorResult:
     """Diagnose dataset refresh failures by fetching history and classifying the root cause.
 
     Retrieves up to history_count refresh attempts from the REST API, identifies failures,
@@ -1275,7 +1353,9 @@ async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: 
             raise ValueError(err)
         history = await loop.run_in_executor(None, conn.get_refresh_history, wid, did, history_count)
         if not history:
-            return {"history": 0, "message": "No refresh history found (dataset may never have refreshed, or history expired ~30 days)."}
+            return RefreshDoctorResult(completed=0, failed=0, consecutive_failures=0,
+                                       most_recent_status=None, most_recent_end=None,
+                                       warning="No refresh history found (dataset may never have refreshed, or history expired ~30 days).")
 
         completed = sum(1 for h in history if str(h.get("status")) == "Completed")
         failed = [h for h in history if str(h.get("status")) == "Failed"]
@@ -1287,30 +1367,30 @@ async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: 
             elif s in ("Completed", "Disabled"):
                 break
 
-        diagnosis = None
+        diag_raw = None
         if failed:
             err_text = failed[0].get("serviceExceptionJson") or ""
-            diagnosis = _refresh_diag_mod.classify_refresh_error(err_text)
+            diag_raw = _refresh_diag_mod.classify_refresh_error(err_text)
 
-        return {
-            "completed": completed,
-            "failed": len(failed),
-            "consecutive_failures": consecutive,
-            "most_recent_status": history[0].get("status"),
-            "most_recent_end": history[0].get("endTime"),
-            "diagnosis": diagnosis,
-            "warning": (
+        return RefreshDoctorResult(
+            completed=completed,
+            failed=len(failed),
+            consecutive_failures=consecutive,
+            most_recent_status=history[0].get("status"),
+            most_recent_end=history[0].get("endTime"),
+            diagnosis=RefreshDiagnosis(**diag_raw) if diag_raw else None,
+            warning=(
                 f"{consecutive} consecutive failure(s). Power BI auto-disables a refresh schedule "
                 f"after {_refresh_diag_mod.CONSECUTIVE_FAILURE_DISABLE_THRESHOLD} consecutive failures."
                 if consecutive >= _refresh_diag_mod.CONSECUTIVE_FAILURE_DISABLE_THRESHOLD - 1 else None
             ),
-        }
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def find_unused_objects(workspace_name: str, dataset_name: str) -> dict:
+async def find_unused_objects(workspace_name: str, dataset_name: str) -> UnusedObjectsResult:
     """Identify measures and columns not referenced by any other model calculation.
 
     Queries INFO.CALCDEPENDENCY() to find all referenced objects, then reports everything
@@ -1344,13 +1424,12 @@ async def find_unused_objects(workspace_name: str, dataset_name: str) -> dict:
         try:
             dep_rows = await loop.run_in_executor(None, run, "EVALUATE INFO.CALCDEPENDENCY()")
         except Exception as e:
-            return {
-                "error": (
+            return UnusedObjectsResult(
+                error=(
                     f"INFO.CALCDEPENDENCY unavailable: {e}. "
                     "This DMV needs write permission on the model (not available in REST read-only mode)."
                 ),
-                "unused_measures": None, "unused_columns": None,
-            }
+            )
         used: set[tuple[str, str]] = set()
         for r in dep_rows:
             rt = _row_get(r, "REFERENCED_TABLE")
@@ -1371,11 +1450,11 @@ async def find_unused_objects(workspace_name: str, dataset_name: str) -> dict:
             for m in t.get("measures", []):
                 if (tn, m.get("name")) not in used:
                     unused_measures.append(f"{tn}[{m.get('name')}]")
-        return {
-            "unused_measures": unused_cols[:200],
-            "unused_columns": unused_measures[:200],
-            "note": "Report visual usage is NOT checked in REST-only mode.",
-        }
+        return UnusedObjectsResult(
+            unused_measures=unused_cols[:200],
+            unused_columns=unused_measures[:200],
+            note="Report visual usage is NOT checked in REST-only mode.",
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1386,7 +1465,7 @@ async def impact_analysis(
     dataset_name: str,
     object_name: str,
     table_name: str | None = None,
-) -> dict:
+) -> ImpactAnalysisResult:
     """Find all model objects that depend on a given measure or column (blast radius analysis).
 
     Queries INFO.CALCDEPENDENCY() to list every measure and calculated column that
@@ -1425,32 +1504,30 @@ async def impact_analysis(
         try:
             rows = await loop.run_in_executor(None, run, f"EVALUATE FILTER(INFO.CALCDEPENDENCY(), {filt})")
         except Exception as e:
-            # INFO.CALCDEPENDENCY requires write permission; return a graceful error dict
-            return {
-                "object_name": object_name,
-                "table_name": table_name,
-                "error": (
+            # INFO.CALCDEPENDENCY requires write permission; return a graceful error model
+            return ImpactAnalysisResult(
+                object_name=object_name,
+                table_name=table_name,
+                error=(
                     f"INFO.CALCDEPENDENCY unavailable: {e}. "
                     "This DMV needs write permission on the model (not available in REST read-only mode)."
                 ),
-                "dependent_count": None,
-                "dependents": None,
-            }
+            )
         dependents = [
-            {
-                "type": _row_get(r, "OBJECT_TYPE"),
-                "table": _row_get(r, "TABLE"),
-                "object": _row_get(r, "OBJECT"),
-            }
+            DependentObject(
+                type=_row_get(r, "OBJECT_TYPE"),
+                table=_row_get(r, "TABLE"),
+                object=_row_get(r, "OBJECT"),
+            )
             for r in rows[:200]
         ]
-        return {
-            "object_name": object_name,
-            "table_name": table_name,
-            "dependent_count": len(dependents),
-            "dependents": dependents,
-            "safe_to_change": len(dependents) == 0,
-        }
+        return ImpactAnalysisResult(
+            object_name=object_name,
+            table_name=table_name,
+            dependent_count=len(dependents),
+            dependents=dependents,
+            safe_to_change=len(dependents) == 0,
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1460,7 +1537,7 @@ async def run_dax_tests(
     workspace_name: str,
     dataset_name: str,
     tests: list[dict],
-) -> dict:
+) -> DaxTestRunResult:
     """Execute a list of DAX regression tests and compare results to expected values.
 
     Each test executes a DAX expression and optionally asserts its scalar result equals
@@ -1516,12 +1593,12 @@ async def run_dax_tests(
 
         graded = [r for r in results if r["status"] in ("PASS", "FAIL")]
         total = len(graded)
-        return {
-            "passed": passed,
-            "total": total,
-            "all_passed": total > 0 and passed == total,
-            "results": results,
-        }
+        return DaxTestRunResult(
+            passed=passed,
+            total=total,
+            all_passed=total > 0 and passed == total,
+            results=[DaxTestCaseResult(**r) for r in results],
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1535,7 +1612,7 @@ async def cross_workspace_lineage(
     workspace_ids: list[str] | None = None,
     dataset_name: str | None = None,
     cache_path: str | None = None,
-) -> dict:
+) -> CrossWorkspaceLineageResult:
     """Build a tenant-wide dataset inventory and lineage summary using the Admin Scanner API.
 
     Triggers a workspace-info scan, polls until it completes (up to ~5 min), then
@@ -1598,13 +1675,13 @@ async def cross_workspace_lineage(
                         json.dump(scan, f)
                 except Exception:
                     pass
-        return summarize_scan(scan, dataset_name=dataset_name)
+        return CrossWorkspaceLineageResult(**summarize_scan(scan, dataset_name=dataset_name))
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def fleet_refresh_monitor(workspace_ids: list[str]) -> dict:
+async def fleet_refresh_monitor(workspace_ids: list[str]) -> FleetRefreshResult:
     """Check the last refresh status of every refreshable dataset across multiple workspaces.
 
     Iterates over all refreshable datasets in each workspace, fetches the most recent
@@ -1640,14 +1717,14 @@ async def fleet_refresh_monitor(workspace_ids: list[str]) -> dict:
                     continue
                 if hist and str(hist[0].get("status")) == "Failed":
                     diag = _refresh_diag_mod.classify_refresh_error(hist[0].get("serviceExceptionJson") or "")
-                    failures.append({"dataset": ds["name"], "end_time": hist[0].get("endTime"), "cause": diag["cause"]})
-        return {"checked": checked, "failed_count": len(failures), "failures": failures}
+                    failures.append(RefreshFailure(dataset=ds["name"], end_time=hist[0].get("endTime"), cause=diag["cause"]))
+        return FleetRefreshResult(checked=checked, failed_count=len(failures), failures=failures)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def usage_and_orphan_analytics(date: str | None = None, filter: str | None = None) -> dict:
+async def usage_and_orphan_analytics(date: str | None = None, filter: str | None = None) -> UsageAnalyticsResult:
     """Fetch and aggregate tenant-wide Power BI activity events for a single UTC day.
 
     Calls the Admin Activity Events API and aggregates all events into top-users,
@@ -1675,7 +1752,7 @@ async def usage_and_orphan_analytics(date: str | None = None, filter: str | None
             date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
         loop = asyncio.get_event_loop()
         events = await loop.run_in_executor(None, conn.admin_get_activity_events_for_day, date, filter)
-        return aggregate_activity(events)
+        return _agg_to_model(aggregate_activity(events))
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1717,7 +1794,7 @@ async def security_status() -> SecurityStatus:
 
 
 @mcp.tool()
-async def security_audit_log(count: int = 10) -> list[dict]:
+async def security_audit_log(count: int = 10) -> list[AuditEvent]:
     """Return recent entries from the server's tamper-evident security audit log.
 
     The audit log records every query that passes through execute_dax, including the
@@ -1742,7 +1819,7 @@ async def security_audit_log(count: int = 10) -> list[dict]:
         sec = _app_context.security
         if not sec.audit_logger:
             return []
-        return sec.audit_logger.get_recent_events(min(count, 100))
+        return [AuditEvent(**e) for e in sec.audit_logger.get_recent_events(min(count, 100))]
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1760,7 +1837,7 @@ async def generate_measure_suite(
     column: str | None = None,
     variants: list[str] | None = None,
     display_folder: str | None = None,
-) -> list[dict]:
+) -> list[MeasureDefinition]:
     """Generate a ready-to-use set of governed DAX measures from a base measure or column.
 
     Produces complete measure definitions including name, expression, format_string,
@@ -1806,7 +1883,7 @@ async def generate_measure_suite(
             "dimension_columns": dimension_columns, "column": column,
             "variants": variants, "display_folder": display_folder,
         }.items() if v is not None}
-        return dax_generator.generate_suite(kind, **params)
+        return [MeasureDefinition(**m) for m in dax_generator.generate_suite(kind, **params)]
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1816,7 +1893,7 @@ async def generate_measure_suite(
 # ============================================================================
 
 @mcp.tool()
-async def summarize_security_scan(scan: dict, dataset_name: str | None = None) -> dict:
+async def summarize_security_scan(scan: dict, dataset_name: str | None = None) -> CrossWorkspaceLineageResult:
     """Produce a governance summary from a raw Admin Scanner JSON payload.
 
     Extracts RLS coverage, sensitivity label coverage, and dataset lineage from the
@@ -1836,13 +1913,13 @@ async def summarize_security_scan(scan: dict, dataset_name: str | None = None) -
         dataset_name: Narrow the output to this specific dataset name (optional)
     """
     try:
-        return summarize_scan(scan, dataset_name=dataset_name)
+        return CrossWorkspaceLineageResult(**summarize_scan(scan, dataset_name=dataset_name))
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def aggregate_user_activity(events: list[dict]) -> dict:
+async def aggregate_user_activity(events: list[dict]) -> UsageAnalyticsResult:
     """Aggregate a list of Power BI activity event objects into a usage summary.
 
     Processes raw activity event objects (as returned by usage_and_orphan_analytics or
@@ -1862,7 +1939,7 @@ async def aggregate_user_activity(events: list[dict]) -> dict:
         events: List of activity event dicts (each must have activityEventType and userId)
     """
     try:
-        return aggregate_activity(events)
+        return _agg_to_model(aggregate_activity(events))
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
