@@ -16,9 +16,14 @@ from powerbi_rest_connector import PowerBIRestConnector
 from security import SecurityLayer
 from models import (
     WorkspaceInfo, DatasetInfo, TableInfo, ColumnInfo,
-    DaxResult, ValidationResult, SecurityStatus, AuditLogEntry
+    DaxResult, ValidationResult, SecurityStatus, AuditLogEntry,
+    MeasureDefinition, BpaResult, AiReadinessResult, PreDeployCheckResult,
+    SecurityScanSummary, UserActivitySummary
 )
 from errors import handle_error
+from dax_generator import generate_suite
+from model_analysis import run_bpa as run_bpa_analysis, audit_ai_readiness
+from governance import summarize_scan, aggregate_activity
 
 # Load environment variables
 load_dotenv()
@@ -457,7 +462,7 @@ async def audit_model() -> str:
 To audit a Power BI model, follow these steps:
 
 1. **Run Best Practice Analyzer**
-   - Use run_bpa to check for BPA violations
+   - Use analyze_bpa to check for BPA violations
    - Review the violations and their severity
    - Prioritize critical issues
 
@@ -612,6 +617,25 @@ async def refresh_errors_resource() -> str:
 """
 
 
+@mcp.resource("powerbi://cloud/{workspace}/{dataset}/schema")
+async def cloud_schema_template(workspace: str, dataset: str) -> str:
+    """
+    Template resource for Power BI Service dataset schema.
+
+    This resource provides a template for accessing the schema of a specific
+    Power BI Service dataset. The workspace and dataset parameters are replaced
+    with actual values when the resource is accessed.
+
+    Args:
+        workspace: The workspace name
+        dataset: The dataset name
+
+    Returns:
+        str: Template string for dataset schema resource
+    """
+    return f"Schema template for workspace '{workspace}' and dataset '{dataset}'"
+
+
 # ============================================================================
 # Security Tools
 # ============================================================================
@@ -673,6 +697,195 @@ async def security_audit_log(ctx, count: int = 10) -> list[AuditLogEntry]:
 
         entries = app_ctx.security.get_recent_entries(count)
         return [AuditLogEntry(**entry) for entry in entries]
+    except Exception as e:
+        error = handle_error(e)
+        raise ValueError(f"{error.error_type}: {error.message}")
+
+
+# ============================================================================
+# DAX Generation Tools
+# ============================================================================
+
+@mcp.tool()
+async def generate_measure_suite(
+    ctx,
+    kind: str,
+    table_name: Optional[str] = None,
+    base_column: Optional[str] = None,
+    base_measure: Optional[str] = None
+) -> list[dict]:
+    """
+    Generate a suite of DAX measures from a base measure or column.
+
+    Creates a governed suite of measures including time intelligence (YTD/QTD/MTD/PY/YoY/YoY %/MoM/rolling windows),
+    share-of-total ratios, ranks, and column statistics. Every generated measure carries a name,
+    self-contained DAX (no dependency on other generated measures), a format string, a display folder,
+    and a description.
+
+    Args:
+        kind: Pattern preset (time_intelligence, ratios, ranking, column_stats)
+        table_name: Table to generate measures for
+        base_column: Base column for aggregations
+        base_measure: Base measure for ratios/ranking
+
+    Returns:
+        list[dict]: List of measure definitions with name, expression, format_string, display_folder, description
+    """
+    try:
+        params = {}
+        if table_name:
+            params["table_name"] = table_name
+        if base_column:
+            params["base_column"] = base_column
+        if base_measure:
+            params["base_measure"] = base_measure
+
+        measures = generate_suite(kind, **params)
+        return measures
+    except Exception as e:
+        error = handle_error(e)
+        raise ValueError(f"{error.error_type}: {error.message}")
+
+
+# ============================================================================
+# Model Analysis Tools
+# ============================================================================
+
+@mcp.tool()
+async def analyze_bpa(ctx, model: dict) -> dict:
+    """
+    Run Best Practice Analyzer rules on a model.
+
+    Analyzes a semantic model against built-in BPA rules and returns violations
+    with severity levels and remediation guidance. This is a lightweight BPA that
+    operates on normalized model metadata without requiring Power BI Desktop.
+
+    Args:
+        model: Normalized model dict with tables, columns, measures, and relationships
+
+    Returns:
+        dict: BPA results with violations, score, and recommendations
+    """
+    try:
+        results = run_bpa_analysis(model)
+        return results
+    except Exception as e:
+        error = handle_error(e)
+        raise ValueError(f"{error.error_type}: {error.message}")
+
+
+@mcp.tool()
+async def audit_ai_readiness(ctx, model: dict) -> dict:
+    """
+    Audit a model for AI-readiness and Copilot optimization.
+
+    Analyzes a semantic model for AI-readiness including naming conventions,
+    documentation coverage, and structure that helps AI assistants understand
+    the model. Returns a readiness score and specific recommendations for improvement.
+
+    Args:
+        model: Normalized model dict with tables, columns, measures, and relationships
+
+    Returns:
+        dict: AI readiness audit results with score, findings, and recommendations
+    """
+    try:
+        results = audit_ai_readiness(model)
+        return results
+    except Exception as e:
+        error = handle_error(e)
+        raise ValueError(f"{error.error_type}: {error.message}")
+
+
+# ============================================================================
+# Governance Tools
+# ============================================================================
+
+@mcp.tool()
+async def pre_deploy_gate(ctx, model: dict, strict: bool = True) -> dict:
+    """
+    Run pre-deployment gate checks on a model.
+
+    Executes a comprehensive set of pre-deployment checks including BPA analysis,
+    AI readiness audit, and custom governance rules. Returns whether the model
+    passes all checks and any blocking issues that must be resolved before deployment.
+
+    Args:
+        model: Normalized model dict with tables, columns, measures, and relationships
+        strict: Whether to fail on warnings (default: true)
+
+    Returns:
+        dict: Pre-deployment check results with passed status, checks, and blocking issues
+    """
+    try:
+        # Run BPA analysis
+        bpa_results = run_bpa_analysis(model)
+
+        # Run AI readiness audit
+        ai_results = audit_ai_readiness(model)
+
+        # Determine if passed
+        blocking_issues = []
+        if bpa_results.get("violations"):
+            blocking_issues.extend([f"BPA: {v.get('rule', 'Unknown')}" for v in bpa_results["violations"] if v.get("severity") == "error"])
+        if ai_results.get("score", 100) < 70:
+            blocking_issues.append("AI readiness score below 70")
+
+        passed = len(blocking_issues) == 0 or not strict
+
+        return {
+            "passed": passed,
+            "checks": {
+                "bpa": bpa_results,
+                "ai_readiness": ai_results
+            },
+            "blocking_issues": blocking_issues
+        }
+    except Exception as e:
+        error = handle_error(e)
+        raise ValueError(f"{error.error_type}: {error.message}")
+
+
+@mcp.tool()
+async def summarize_security_scan(ctx, scan: dict, dataset_name: Optional[str] = None) -> dict:
+    """
+    Summarize a security scan result.
+
+    Processes and summarizes security scan results for a dataset, providing
+    a consolidated view of security findings and recommendations.
+
+    Args:
+        scan: Security scan results to summarize
+        dataset_name: Optional dataset name for context
+
+    Returns:
+        dict: Summarized security scan results
+    """
+    try:
+        results = summarize_scan(scan, dataset_name)
+        return results
+    except Exception as e:
+        error = handle_error(e)
+        raise ValueError(f"{error.error_type}: {error.message}")
+
+
+@mcp.tool()
+async def aggregate_user_activity(ctx, events: list[dict]) -> dict:
+    """
+    Aggregate user activity events.
+
+    Processes and aggregates user activity events to provide insights
+    into usage patterns and potential security concerns.
+
+    Args:
+        events: List of user activity events to aggregate
+
+    Returns:
+        dict: Aggregated user activity insights
+    """
+    try:
+        results = aggregate_activity(events)
+        return results
     except Exception as e:
         error = handle_error(e)
         raise ValueError(f"{error.error_type}: {error.message}")

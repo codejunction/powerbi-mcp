@@ -104,3 +104,56 @@ class AuditLogEntry(BaseModel):
     arguments: Dict[str, Any] = Field(description="Arguments passed to the tool")
     result: str = Field(description="Result of the tool call")
     pii_findings: List[str] = Field(default_factory=list, description="PII findings")
+
+
+# ============================================================================
+# Additional Tool Output Models
+# ============================================================================
+
+class MeasureDefinition(BaseModel):
+    """Single measure definition."""
+    name: str = Field(description="Measure name")
+    expression: str = Field(description="DAX expression")
+    format_string: Optional[str] = Field(default=None, description="Format string")
+    description: Optional[str] = Field(default=None, description="Measure description")
+    display_folder: Optional[str] = Field(default=None, description="Display folder")
+
+
+class BpaResult(BaseModel):
+    """Result from Best Practice Analyzer run."""
+    violations: List[Dict[str, Any]] = Field(description="List of violations found")
+    score: float = Field(description="Overall BPA score")
+    recommendations: List[str] = Field(description="Recommendations for improvement")
+
+
+class AiReadinessResult(BaseModel):
+    """Result from AI readiness audit."""
+    score: float = Field(description="AI readiness score")
+    findings: List[Dict[str, Any]] = Field(description="Findings from the audit")
+    recommendations: List[str] = Field(description="Recommendations for improvement")
+
+
+class PreDeployCheckResult(BaseModel):
+    """Result from pre-deployment gate checks."""
+    passed: bool = Field(description="Whether all checks passed")
+    checks: List[Dict[str, Any]] = Field(description="Individual check results")
+    blocking_issues: List[str] = Field(description="Blocking issues that must be resolved")
+
+
+class SecurityScanSummary(BaseModel):
+    """Summary of security scan results."""
+    total_findings: int = Field(description="Total number of findings")
+    critical_findings: int = Field(description="Number of critical findings")
+    high_findings: int = Field(description="Number of high severity findings")
+    medium_findings: int = Field(description="Number of medium severity findings")
+    low_findings: int = Field(description="Number of low severity findings")
+    recommendations: List[str] = Field(description="Security recommendations")
+
+
+class UserActivitySummary(BaseModel):
+    """Summary of user activity aggregation."""
+    total_events: int = Field(description="Total number of events")
+    unique_users: int = Field(description="Number of unique users")
+    top_users: List[Dict[str, Any]] = Field(description="Top users by activity")
+    activity_trends: Dict[str, Any] = Field(description="Activity trends over time")
+    security_flags: List[str] = Field(description="Potential security concerns")
