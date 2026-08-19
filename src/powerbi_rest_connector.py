@@ -130,8 +130,9 @@ class PowerBIRestConnector:
                     "id": ds["id"],
                     "name": ds["name"],
                     "workspace_id": workspace_id,
-                    "configuredBy": ds.get("configuredBy", "Unknown"),
-                    "isRefreshable": ds.get("isRefreshable", False),
+                    "configured_by": ds.get("configuredBy", "Unknown"),
+                    "is_refreshable": ds.get("isRefreshable", False),
+                    "is_on_prem_gateway_required": ds.get("isOnPremGatewayRequired", False),
                 }
                 for ds in datasets
             ]
@@ -235,21 +236,6 @@ class PowerBIRestConnector:
             return []
 
     def get_semantic_model_metadata(self, workspace_id: str, dataset_id: str) -> Dict[str, Any]:
-        """Return semantic model metadata available through REST and Execute Queries."""
-        dataset = self.get_dataset(workspace_id, dataset_id)
-        metadata = {"dataset": dataset, "tables": [], "columns": [], "measures": [], "relationships": []}
-        queries = {
-            "tables": "EVALUATE INFO.VIEW.TABLES()",
-            "columns": "EVALUATE INFO.VIEW.COLUMNS()",
-            "measures": "EVALUATE INFO.VIEW.MEASURES()",
-            "relationships": "EVALUATE INFO.VIEW.RELATIONSHIPS()",
-        }
-        for key, query in queries.items():
-            try:
-                metadata[key] = self.execute_dax_query(workspace_id, dataset_id, query)
-            except Exception as exc:
-                metadata[f"{key}_error"] = str(exc)
-        return metadata
         """Return semantic model metadata available through REST and Execute Queries."""
         dataset = self.get_dataset(workspace_id, dataset_id)
         metadata = {"dataset": dataset, "tables": [], "columns": [], "measures": [], "relationships": []}
