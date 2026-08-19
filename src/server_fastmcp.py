@@ -9,7 +9,7 @@ from typing import Optional
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from mcp.server import FastMCP
+from fastmcp import FastMCP
 from pydantic import BaseModel
 
 from powerbi_rest_connector import PowerBIRestConnector
@@ -316,14 +316,14 @@ async def security_audit_log(ctx, count: int = 10) -> list[AuditLogEntry]:
 if __name__ == "__main__":
     import sys
 
-    # Support both stdio and HTTP transports
-    if len(sys.argv) > 1 and sys.argv[1] == "http":
-        # Run with HTTP transport for remote access
-        host = os.getenv("HOST", "0.0.0.0")
-        port = int(os.getenv("PORT", "8000"))
-        logger.info(f"Starting HTTP server on {host}:{port}")
-        mcp.run(transport="http", host=host, port=port)
-    else:
+    # Support both stdio and SSE transports
+    if len(sys.argv) > 1 and sys.argv[1] == "stdio":
         # Run with stdio transport for local access
         logger.info("Starting stdio server")
         mcp.run(transport="stdio")
+    else:
+        # Run with SSE transport for remote access (default)
+        host = os.getenv("HOST", "0.0.0.0")
+        port = int(os.getenv("PORT", "8000"))
+        logger.info(f"Starting SSE server on {host}:{port}")
+        mcp.run(transport="sse", host=host, port=port)
