@@ -1,5 +1,5 @@
 """
-Power BI MCP Server - FastMCP-based implementation with type-safe Pydantic models.
+Power BI MCP Server - Complete FastMCP rewrite with separate tool definitions.
 REST-only, read-only Power BI Service access.
 """
 import asyncio
@@ -13,25 +13,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel
 
 from powerbi_rest_connector import PowerBIRestConnector
-from security import SecurityLayer, get_security_layer
-from errors import handle_error
-from models import (
-    # Input models
-    ListWorkspacesInput, ListDatasetsInput, ListTablesInput, ListColumnsInput,
-    ExecuteDaxInput, ValidateDaxInput, GetModelInfoInput, DescribeSemanticModelInput,
-    AnswerQueryPlanInput, SecurityStatusInput, SecurityAuditLogInput,
-    RunBpaInput, AuditAiReadinessInput, AnalyzeModelStorageInput,
-    AnalyzeQueryPerformanceInput, ModelDiffInput, PreDeployGateInput,
-    RefreshDoctorInput, FindUnusedObjectsInput, ImpactAnalysisInput,
-    RunDaxTestsInput, ScanReferentialIntegrityInput, GenerateMeasureSuiteInput,
-    # Output models
-    DaxResult, ValidationResult, QueryPlan, SecurityStatus, AuditLogEntry,
-    BpaResult, AiReadinessResult, StorageAnalysis, QueryPerformanceAnalysis,
-    ModelDiffResult, PreDeployCheckResult, RefreshDiagnosis, UnusedObjectsResult,
-    ImpactAnalysisResult, DaxTestResult, ReferentialIntegrityResult, MeasureSuiteResult,
-    # Common models
-    WorkspaceInfo, DatasetInfo, TableInfo, ColumnInfo, MeasureInfo, RelationshipInfo,
-)
+from security import SecurityLayer
 
 # Load environment variables
 load_dotenv()
@@ -59,7 +41,6 @@ class AppContext(BaseModel):
 @asynccontextmanager
 async def app_lifespan(mcp: FastMCP):
     """Manage application lifecycle with type-safe context."""
-    # Initialize on startup
     logger.info("Initializing Power BI MCP Server")
 
     tenant_id = os.getenv("TENANT_ID", "")
@@ -88,7 +69,6 @@ async def app_lifespan(mcp: FastMCP):
     try:
         yield AppContext(rest_connector=rest_connector, security=security)
     finally:
-        # Cleanup on shutdown
         logger.info("Shutting down Power BI MCP Server")
 
 
@@ -103,33 +83,35 @@ mcp = FastMCP(
 
 
 # ============================================================================
-# Cloud REST API Tools
+# Tool Definitions
 # ============================================================================
 
+# Cloud REST API Tools
+
 @mcp.tool()
-async def list_workspaces(ctx) -> list[WorkspaceInfo]:
+async def list_workspaces(ctx) -> list[dict]:
     """List all Power BI Service workspaces accessible to the Service Principal."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.rest_connector:
         raise ValueError("REST connector not initialized")
 
     workspaces = await app_ctx.rest_connector.list_workspaces()
-    return [WorkspaceInfo(**ws) for ws in workspaces]
+    return workspaces
 
 
 @mcp.tool()
-async def list_datasets(ctx, workspace_id: str) -> list[DatasetInfo]:
+async def list_datasets(ctx, workspace_id: str) -> list[dict]:
     """List all datasets in a Power BI Service workspace."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.rest_connector:
         raise ValueError("REST connector not initialized")
 
     datasets = await app_ctx.rest_connector.list_datasets(workspace_id)
-    return [DatasetInfo(**ds) for ds in datasets]
+    return datasets
 
 
 @mcp.tool()
-async def list_tables(ctx, workspace_name: str, dataset_name: str) -> list[TableInfo]:
+async def list_tables(ctx, workspace_name: str, dataset_name: str) -> list[dict]:
     """List all tables in a Power BI Service dataset via REST API."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.rest_connector:
@@ -158,7 +140,7 @@ async def list_tables(ctx, workspace_name: str, dataset_name: str) -> list[Table
         raise ValueError(f"Dataset '{dataset_name}' not found")
 
     tables = await app_ctx.rest_connector.list_tables(workspace_id, dataset_id)
-    return [TableInfo(**table) for table in tables]
+    return tables
 
 
 @mcp.tool()
@@ -167,7 +149,7 @@ async def list_columns(
     workspace_name: str,
     dataset_name: str,
     table_name: str
-) -> list[ColumnInfo]:
+) -> list[dict]:
     """List columns for a table in a Power BI Service dataset."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.rest_connector:
@@ -185,7 +167,7 @@ async def list_columns(
         raise ValueError(f"Dataset '{dataset_name}' not found")
 
     columns = await app_ctx.rest_connector.list_columns(workspace_id, dataset_id, table_name)
-    return [ColumnInfo(**col) for col in columns]
+    return columns
 
 
 @mcp.tool()
@@ -194,7 +176,7 @@ async def execute_dax(
     workspace_name: str,
     dataset_name: str,
     dax_query: str
-) -> DaxResult:
+) -> dict:
     """Execute a DAX query against a Power BI Service dataset."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.rest_connector:
@@ -224,11 +206,11 @@ async def execute_dax(
     if app_ctx.security:
         rows = [app_ctx.security.apply_policies(row) for row in rows]
 
-    return DaxResult(
-        rows=rows,
-        execution_time_ms=execution_time,
-        row_count=len(rows)
-    )
+    return {
+        "rows": rows,
+        "execution_time_ms": execution_time,
+        "row_count": len(rows)
+    }
 
 
 @mcp.tool()
@@ -238,28 +220,28 @@ async def validate_dax(
     as_measure: bool = False,
     workspace_name: str = "",
     dataset_name: str = ""
-) -> ValidationResult:
+) -> dict:
     """Validate a DAX query or measure expression against the connected model."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.rest_connector:
         raise ValueError("REST connector not initialized")
 
     if not workspace_name or not dataset_name:
-        return ValidationResult(
-            valid=False,
-            error="workspace_name and dataset_name are required"
-        )
+        return {
+            "valid": False,
+            "error": "workspace_name and dataset_name are required"
+        }
 
     # Get workspace and dataset IDs
     workspaces = await app_ctx.rest_connector.list_workspaces()
     workspace_id = next((ws.get("id") for ws in workspaces if ws.get("name") == workspace_name), None)
     if not workspace_id:
-        return ValidationResult(valid=False, error=f"Workspace '{workspace_name}' not found")
+        return {"valid": False, "error": f"Workspace '{workspace_name}' not found"}
 
     datasets = await app_ctx.rest_connector.list_datasets(workspace_id)
     dataset_id = next((ds.get("id") for ds in datasets if ds.get("name") == dataset_name), None)
     if not dataset_id:
-        return ValidationResult(valid=False, error=f"Dataset '{dataset_name}' not found")
+        return {"valid": False, "error": f"Dataset '{dataset_name}' not found"}
 
     # Wrap as measure if needed
     if as_measure:
@@ -269,44 +251,42 @@ async def validate_dax(
 
     try:
         await app_ctx.rest_connector.execute_dax(workspace_id, dataset_id, probe)
-        return ValidationResult(valid=True, probe=probe)
+        return {"valid": True, "probe": probe}
     except Exception as e:
-        return ValidationResult(valid=False, error=str(e), probe=probe)
+        return {"valid": False, "error": str(e), "probe": probe}
 
 
-# ============================================================================
 # Security Tools
-# ============================================================================
 
 @mcp.tool()
-async def security_status(ctx) -> SecurityStatus:
+async def security_status(ctx) -> dict:
     """Get the current security settings and status."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.security:
-        return SecurityStatus(
-            pii_detection_enabled=False,
-            audit_logging_enabled=False,
-            access_policies_enabled=False,
-            active_policies=[]
-        )
+        return {
+            "pii_detection_enabled": False,
+            "audit_logging_enabled": False,
+            "access_policies_enabled": False,
+            "active_policies": []
+        }
 
-    return SecurityStatus(
-        pii_detection_enabled=app_ctx.security.enable_pii,
-        audit_logging_enabled=app_ctx.security.enable_audit,
-        access_policies_enabled=app_ctx.security.enable_policies,
-        active_policies=app_ctx.security.get_active_policies()
-    )
+    return {
+        "pii_detection_enabled": app_ctx.security.enable_pii_detection,
+        "audit_logging_enabled": app_ctx.security.enable_audit,
+        "access_policies_enabled": app_ctx.security.enable_policies,
+        "active_policies": app_ctx.security.get_active_policies()
+    }
 
 
 @mcp.tool()
-async def security_audit_log(ctx, count: int = 10) -> list[AuditLogEntry]:
+async def security_audit_log(ctx, count: int = 10) -> list[dict]:
     """View recent entries from the security audit log."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.security:
         return []
 
     entries = app_ctx.security.get_recent_entries(count)
-    return [AuditLogEntry(**entry) for entry in entries]
+    return entries
 
 
 # ============================================================================
