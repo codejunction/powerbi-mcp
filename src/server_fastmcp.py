@@ -4,6 +4,7 @@ REST-only, read-only Power BI Service access.
 
 All tools are type-safe (Pydantic I/O), async, and follow FastMCP 3.x standards.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.server.transforms.search import RegexSearchTransform, BM25SearchTransform
 from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,37 +27,57 @@ from security import SecurityLayer
 from security.access_policy import AccessPolicyEngine
 from models import (
     # discovery / listing
-    WorkspaceInfo, DatasetInfo, TableInfo, ColumnInfo,
+    WorkspaceInfo,
+    DatasetInfo,
+    TableInfo,
+    ColumnInfo,
     # DAX execution & validation
-    DaxResult, ValidationResult,
+    DaxResult,
+    ValidationResult,
     # model exploration
-    ModelSummaryResult, TableSummary,
-    SemanticModelDescription, SemanticModel, TableDetail, ColumnDetail, MeasureDetail, RelationshipDetail,
-    CandidateMeasure, QueryPlan, QueryPlanResult,
+    ModelSummaryResult,
+    TableSummary,
+    SemanticModelDescription,
+    SemanticModel,
+    TableDetail,
+    ColumnDetail,
+    MeasureDetail,
+    RelationshipDetail,
+    CandidateMeasure,
+    QueryPlan,
+    QueryPlanResult,
     # model quality
     BpaRunResult,
     AiReadinessResult,
-    DaxLintResult, DaxRewrite,
+    DaxLintResult,
+    DaxRewrite,
     DaxRewriteResult,
     # storage & performance
-    ModelStorageResult, TableStorageInfo,
-    QueryPerfResult, ModelDiffResult,
+    ModelStorageResult,
+    TableStorageInfo,
+    QueryPerfResult,
+    ModelDiffResult,
     # governance & deployment
-    ReferentialIntegrityResult, ReferentialViolation,
+    ReferentialIntegrityResult,
+    ReferentialViolation,
     PreDeployGateResult,
     BpaValidateResult,
     AuditIntegrityResult,
     # diagnostics & ops
     RefreshDoctorResult,
     UnusedObjectsResult,
-    ImpactAnalysisResult, DependentObject,
-    DaxTestRunResult, DaxTestCaseResult,
+    ImpactAnalysisResult,
+    DependentObject,
+    DaxTestRunResult,
+    DaxTestCaseResult,
     # fleet / governance ops
     CrossWorkspaceLineageResult,
-    FleetRefreshResult, RefreshFailure,
+    FleetRefreshResult,
+    RefreshFailure,
     UsageAnalyticsResult,
     # security & audit
-    SecurityStatus, AuditEvent,
+    SecurityStatus,
+    AuditEvent,
     # DAX generation
     MeasureDefinition,
 )
@@ -74,14 +96,17 @@ _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 class ServerSettings(BaseSettings):
     """Runtime configuration loaded from environment and repo .env."""
-    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
+
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
 
     tenant_id: str = Field(default="", alias="TENANT_ID")
     client_id: str = Field(default="", alias="CLIENT_ID")
     client_secret: SecretStr | None = Field(default=None, alias="CLIENT_SECRET")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     token_ttl_minutes: int = Field(default=20, alias="TOKEN_TTL_MINUTES")
-    enable_pii_detection: bool = Field(default=True, alias="ENABLE_PII_DETECTION")
+    enable_pii_detection: bool = Field(default=False, alias="ENABLE_PII_DETECTION")
     enable_audit: bool = Field(default=True, alias="ENABLE_AUDIT")
     enable_policies: bool = Field(default=True, alias="ENABLE_POLICIES")
     host: str = Field(default="0.0.0.0", alias="HOST")
@@ -110,8 +135,10 @@ logger = logging.getLogger("powerbi-mcp")
 # Application context
 # ============================================================================
 
+
 class AppContext(BaseModel):
     """Holds live connectors for the duration of a server session."""
+
     model_config = {"arbitrary_types_allowed": True}
 
     rest_connector: PowerBIRestConnector | None = None
@@ -126,13 +153,19 @@ async def app_lifespan(mcp: FastMCP):
     global _app_context
     logger.info("Initializing Power BI MCP Server")
 
+    # mcp.add_transform(RegexSearchTransform(max_results=10))
+    # mcp.add_transform(BM25SearchTransform(max_results=3))
     conn: PowerBIRestConnector | None = None
     if _settings.has_rest_credentials():
         try:
             conn = PowerBIRestConnector(
                 _settings.tenant_id,
                 _settings.client_id,
-                _settings.client_secret.get_secret_value() if _settings.client_secret else "",
+                (
+                    _settings.client_secret.get_secret_value()
+                    if _settings.client_secret
+                    else ""
+                ),
                 token_ttl_minutes=_settings.token_ttl_minutes,
             )
             conn.authenticate()
@@ -140,7 +173,9 @@ async def app_lifespan(mcp: FastMCP):
         except Exception as e:
             logger.error("Failed to authenticate: %s", e)
 
-    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "policies.yaml")
+    config_path = os.path.join(
+        os.path.dirname(__file__), "..", "config", "policies.yaml"
+    )
     security = SecurityLayer(
         config_path=config_path if os.path.exists(config_path) else None,
         enable_pii_detection=_settings.enable_pii_detection,
@@ -156,21 +191,29 @@ async def app_lifespan(mcp: FastMCP):
         logger.info("Shutting down Power BI MCP Server")
 
 
-mcp = FastMCP("powerbi-mcp", lifespan=app_lifespan)
+mcp = FastMCP(
+    "powerbi-mcp",
+    lifespan=app_lifespan,
+)
 
 
 # ============================================================================
 # Internal helpers
 # ============================================================================
 
+
 def _conn() -> PowerBIRestConnector:
     """Return the live REST connector or raise."""
     if not _app_context or not _app_context.rest_connector:
-        raise ValueError("REST connector not initialized – check settings / TENANT_ID / CLIENT_ID / CLIENT_SECRET")
+        raise ValueError(
+            "REST connector not initialized – check settings / TENANT_ID / CLIENT_ID / CLIENT_SECRET"
+        )
     return _app_context.rest_connector
 
 
-def _resolve_ids(conn: PowerBIRestConnector, workspace_name: str, dataset_name: str) -> tuple[str, str]:
+def _resolve_ids(
+    conn: PowerBIRestConnector, workspace_name: str, dataset_name: str
+) -> tuple[str, str]:
     """Resolve workspace + dataset names to their GUIDs. Raises ValueError if not found."""
     ws = conn.list_workspaces()
     wid = next((w["id"] for w in ws if w["name"] == workspace_name), None)
@@ -179,14 +222,23 @@ def _resolve_ids(conn: PowerBIRestConnector, workspace_name: str, dataset_name: 
     ds = conn.list_datasets(wid)
     did = next((d["id"] for d in ds if d["name"] == dataset_name), None)
     if not did:
-        raise ValueError(f"Dataset '{dataset_name}' not found in workspace '{workspace_name}'")
+        raise ValueError(
+            f"Dataset '{dataset_name}' not found in workspace '{workspace_name}'"
+        )
     return wid, did
 
 
 def _row_get(row: dict[str, Any], *names: str) -> Any:
     """Read a field from an INFO.VIEW.* row tolerating bracket/case variants."""
     for n in names:
-        for k in (n, f"[{n}]", n.lower(), f"[{n.lower()}]", n.upper(), f"[{n.upper()}]"):
+        for k in (
+            n,
+            f"[{n}]",
+            n.lower(),
+            f"[{n.lower()}]",
+            n.upper(),
+            f"[{n.upper()}]",
+        ):
             if k in row:
                 return row[k]
     return None
@@ -197,10 +249,9 @@ def _norm(rows: list[dict]) -> list[dict]:
     return [{str(k).strip("[]"): v for k, v in r.items()} for r in (rows or [])]
 
 
-
-
-
-async def _gather_model(workspace_name: str, dataset_name: str) -> tuple[dict[str, Any] | None, str | None]:
+async def _gather_model(
+    workspace_name: str, dataset_name: str
+) -> tuple[dict[str, Any] | None, str | None]:
     """Build a normalized model dict from INFO.VIEW.* queries. Returns (model, error)."""
     conn = _conn()
     wid, did = _resolve_ids(conn, workspace_name, dataset_name)
@@ -209,14 +260,22 @@ async def _gather_model(workspace_name: str, dataset_name: str) -> tuple[dict[st
     g = _row_get
 
     try:
-        tables_rows = await loop.run_in_executor(None, run, "EVALUATE INFO.VIEW.TABLES()")
-        cols_rows   = await loop.run_in_executor(None, run, "EVALUATE INFO.VIEW.COLUMNS()")
-        meas_rows   = await loop.run_in_executor(None, run, "EVALUATE INFO.VIEW.MEASURES()")
+        tables_rows = await loop.run_in_executor(
+            None, run, "EVALUATE INFO.VIEW.TABLES()"
+        )
+        cols_rows = await loop.run_in_executor(
+            None, run, "EVALUATE INFO.VIEW.COLUMNS()"
+        )
+        meas_rows = await loop.run_in_executor(
+            None, run, "EVALUATE INFO.VIEW.MEASURES()"
+        )
     except Exception as e:
         return None, f"Could not read model metadata via INFO.VIEW: {e}"
 
     try:
-        rel_rows = await loop.run_in_executor(None, run, "EVALUATE INFO.VIEW.RELATIONSHIPS()")
+        rel_rows = await loop.run_in_executor(
+            None, run, "EVALUATE INFO.VIEW.RELATIONSHIPS()"
+        )
     except Exception:
         rel_rows = []
 
@@ -224,36 +283,78 @@ async def _gather_model(workspace_name: str, dataset_name: str) -> tuple[dict[st
     for r in tables_rows:
         nm = g(r, "Name")
         if nm:
-            tmap[nm] = {"name": nm, "is_hidden": g(r, "IsHidden"),
-                        "description": g(r, "Description") or "", "columns": [], "measures": []}
+            tmap[nm] = {
+                "name": nm,
+                "is_hidden": g(r, "IsHidden"),
+                "description": g(r, "Description") or "",
+                "columns": [],
+                "measures": [],
+            }
     for r in cols_rows:
         tn = g(r, "Table") or ""
-        tmap.setdefault(tn, {"name": tn, "is_hidden": False, "description": "", "columns": [], "measures": []})
-        tmap[tn]["columns"].append({
-            "name": g(r, "Name"), "table": tn, "data_type": g(r, "DataType"),
-            "is_hidden": g(r, "IsHidden"), "is_key": g(r, "IsKey"),
-            "summarize_by": g(r, "SummarizeBy"), "sort_by": g(r, "SortByColumn"),
-            "description": g(r, "Description") or "", "display_folder": g(r, "DisplayFolder"),
-            "data_category": g(r, "DataCategory"),
-            "is_calculated": str(g(r, "ColumnType") or "").lower() == "calculated",
-            "expression": g(r, "Expression"),
-        })
+        tmap.setdefault(
+            tn,
+            {
+                "name": tn,
+                "is_hidden": False,
+                "description": "",
+                "columns": [],
+                "measures": [],
+            },
+        )
+        tmap[tn]["columns"].append(
+            {
+                "name": g(r, "Name"),
+                "table": tn,
+                "data_type": g(r, "DataType"),
+                "is_hidden": g(r, "IsHidden"),
+                "is_key": g(r, "IsKey"),
+                "summarize_by": g(r, "SummarizeBy"),
+                "sort_by": g(r, "SortByColumn"),
+                "description": g(r, "Description") or "",
+                "display_folder": g(r, "DisplayFolder"),
+                "data_category": g(r, "DataCategory"),
+                "is_calculated": str(g(r, "ColumnType") or "").lower() == "calculated",
+                "expression": g(r, "Expression"),
+            }
+        )
     for r in meas_rows:
         tn = g(r, "Table") or ""
-        tmap.setdefault(tn, {"name": tn, "is_hidden": False, "description": "", "columns": [], "measures": []})
-        tmap[tn]["measures"].append({
-            "name": g(r, "Name"), "table": tn, "expression": g(r, "Expression"),
-            "format_string": g(r, "FormatString"), "description": g(r, "Description") or "",
-            "display_folder": g(r, "DisplayFolder"), "is_hidden": g(r, "IsHidden"),
-            "data_type": g(r, "DataType"),
-        })
-    rels = [{
-        "from_table": g(r, "FromTable"), "from_column": g(r, "FromColumn"),
-        "to_table": g(r, "ToTable"), "to_column": g(r, "ToColumn"),
-        "is_active": g(r, "IsActive"),
-        "cross_filter": g(r, "CrossFilteringBehavior", "CrossFilterDirection"),
-        "from_cardinality": g(r, "FromCardinality"), "to_cardinality": g(r, "ToCardinality"),
-    } for r in rel_rows]
+        tmap.setdefault(
+            tn,
+            {
+                "name": tn,
+                "is_hidden": False,
+                "description": "",
+                "columns": [],
+                "measures": [],
+            },
+        )
+        tmap[tn]["measures"].append(
+            {
+                "name": g(r, "Name"),
+                "table": tn,
+                "expression": g(r, "Expression"),
+                "format_string": g(r, "FormatString"),
+                "description": g(r, "Description") or "",
+                "display_folder": g(r, "DisplayFolder"),
+                "is_hidden": g(r, "IsHidden"),
+                "data_type": g(r, "DataType"),
+            }
+        )
+    rels = [
+        {
+            "from_table": g(r, "FromTable"),
+            "from_column": g(r, "FromColumn"),
+            "to_table": g(r, "ToTable"),
+            "to_column": g(r, "ToColumn"),
+            "is_active": g(r, "IsActive"),
+            "cross_filter": g(r, "CrossFilteringBehavior", "CrossFilterDirection"),
+            "from_cardinality": g(r, "FromCardinality"),
+            "to_cardinality": g(r, "ToCardinality"),
+        }
+        for r in rel_rows
+    ]
 
     return {"tables": list(tmap.values()), "relationships": rels}, None
 
@@ -288,6 +389,7 @@ def _measures_from_model(model: dict, measure_name: str | None = None) -> list[d
 # ============================================================================
 # Prompts
 # ============================================================================
+
 
 @mcp.prompt()
 async def optimize_measure(measure_name: str) -> str:
@@ -378,11 +480,17 @@ async def plan_safe_rename(old_name: str, new_name: str) -> str:
 # Resources
 # ============================================================================
 
+
 @mcp.resource("powerbi://reference/bpa-rules")
 async def bpa_rules_resource() -> str:
     """Built-in Best Practice Analyzer rule catalog."""
     rules = [
-        {"id": r["id"], "category": r["category"], "severity": r["severity"], "name": r["name"]}
+        {
+            "id": r["id"],
+            "category": r["category"],
+            "severity": r["severity"],
+            "name": r["name"],
+        }
         for r in model_analysis.DEFAULT_BPA_RULES
     ]
     return json.dumps(rules, indent=2)
@@ -391,10 +499,13 @@ async def bpa_rules_resource() -> str:
 @mcp.resource("powerbi://reference/refresh-errors")
 async def refresh_errors_resource() -> str:
     """Known refresh failure causes and fixes."""
-    return json.dumps({
-        "consecutive_failure_disable_threshold": _refresh_diag_mod.CONSECUTIVE_FAILURE_DISABLE_THRESHOLD,
-        "rules": _refresh_diag_mod.REFRESH_ERROR_RULES,
-    }, indent=2)
+    return json.dumps(
+        {
+            "consecutive_failure_disable_threshold": _refresh_diag_mod.CONSECUTIVE_FAILURE_DISABLE_THRESHOLD,
+            "rules": _refresh_diag_mod.REFRESH_ERROR_RULES,
+        },
+        indent=2,
+    )
 
 
 @mcp.resource("powerbi://cloud/{workspace}/{dataset}/schema")
@@ -410,6 +521,7 @@ async def cloud_schema(workspace: str, dataset: str) -> str:
 # Tools – discovery & listing
 # ============================================================================
 
+
 @mcp.tool()
 async def list_workspaces() -> list[WorkspaceInfo]:
     """List all Power BI Service workspaces the Service Principal can access.
@@ -417,12 +529,6 @@ async def list_workspaces() -> list[WorkspaceInfo]:
     Use this as the first step to discover available workspaces before calling any
     dataset-level tool. Returns workspace id, name, type, and state. Pass the id to
     list_datasets, or pass the name to any tool that accepts workspace_name.
-
-    Returns a list of WorkspaceInfo objects with fields:
-        id:    workspace GUID – required by list_datasets
-        name:  display name – required by all workspace_name parameters
-        type:  "Workspace" | "PersonalGroup" | etc.
-        state: "Active" | "Deleted" | etc.
     """
     try:
         return [WorkspaceInfo(**ws) for ws in _conn().list_workspaces()]
@@ -437,12 +543,6 @@ async def list_datasets(workspace_id: str) -> list[DatasetInfo]:
     Use this after list_workspaces to enumerate what semantic models are available.
     Returns id, name, configured_by, and is_refreshable for each dataset. Pass the
     dataset name to any tool that accepts dataset_name.
-
-    Returns a list of DatasetInfo objects with fields:
-        id:              dataset GUID
-        name:            display name – used by all dataset_name parameters
-        configured_by:   owner/configuring user
-        is_refreshable:  whether the dataset supports scheduled refresh
 
     Args:
         workspace_id: Workspace GUID from list_workspaces
@@ -462,10 +562,6 @@ async def list_tables(workspace_name: str, dataset_name: str) -> list[TableInfo]
     requires a table_name. Hidden tables (is_hidden=true) are included so you can
     identify them; prefer visible ones when writing DAX for end users.
 
-    Returns a list of TableInfo objects with fields:
-        name:      table name – use this in DAX and other tools
-        is_hidden: whether the table is hidden from report authors
-
     Args:
         workspace_name: Workspace display name (from list_workspaces)
         dataset_name:   Dataset display name (from list_datasets)
@@ -474,24 +570,28 @@ async def list_tables(workspace_name: str, dataset_name: str) -> list[TableInfo]
         conn = _conn()
         wid, did = _resolve_ids(conn, workspace_name, dataset_name)
         rows = _norm(conn.execute_dax_query(wid, did, "EVALUATE INFO.VIEW.TABLES()"))
-        return [TableInfo(name=r.get("Name", ""), rows=0, is_hidden=bool(r.get("IsHidden"))) for r in rows]
+        return [
+            TableInfo(name=r.get("Name", ""), rows=0, is_hidden=bool(r.get("IsHidden")))
+            for r in rows
+        ]
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def list_columns(workspace_name: str, dataset_name: str, table_name: str) -> list[ColumnInfo]:
+async def list_columns(
+    workspace_name: str, dataset_name: str, table_name: str
+) -> list[ColumnInfo]:
     """List all columns in a specific table, including data types, hidden status, and descriptions.
 
     Queries INFO.VIEW.COLUMNS() filtered by table name. Use this before writing DAX
     to confirm exact column names and data types. Hidden columns (is_hidden=true) are
     generally internal; visible ones are safe to reference in queries and measures.
 
-    Returns a list of ColumnInfo objects with fields:
-        name:        column name – use this verbatim in DAX: 'TableName'[ColumnName]
-        data_type:   Int64, String, DateTime, Decimal, Boolean, etc.
-        is_hidden:   whether hidden from report authors
-        description: semantic description if set (empty string if not)
+    Args:
+        workspace_name: Workspace display name (from list_workspaces)
+        dataset_name:   Dataset display name (from list_datasets)
+        table_name:     Exact table name (from list_tables)
 
     Args:
         workspace_name: Workspace display name (from list_workspaces)
@@ -502,11 +602,20 @@ async def list_columns(workspace_name: str, dataset_name: str, table_name: str) 
         conn = _conn()
         wid, did = _resolve_ids(conn, workspace_name, dataset_name)
         tq = table_name.replace('"', '""')
-        rows = _norm(conn.execute_dax_query(wid, did, f'EVALUATE FILTER(INFO.VIEW.COLUMNS(), [Table] = "{tq}")'))
-        return [ColumnInfo(
-            name=r.get("Name", ""), data_type=str(r.get("DataType", "")),
-            is_hidden=bool(r.get("IsHidden")), description=r.get("Description") or None,
-        ) for r in rows]
+        rows = _norm(
+            conn.execute_dax_query(
+                wid, did, f'EVALUATE FILTER(INFO.VIEW.COLUMNS(), [Table] = "{tq}")'
+            )
+        )
+        return [
+            ColumnInfo(
+                name=r.get("Name", ""),
+                data_type=str(r.get("DataType", "")),
+                is_hidden=bool(r.get("IsHidden")),
+                description=r.get("Description") or None,
+            )
+            for r in rows
+        ]
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -514,6 +623,7 @@ async def list_columns(workspace_name: str, dataset_name: str, table_name: str) 
 # ============================================================================
 # Tools – model exploration
 # ============================================================================
+
 
 @mcp.tool()
 async def get_model_info(workspace_name: str, dataset_name: str) -> ModelSummaryResult:
@@ -523,12 +633,9 @@ async def get_model_info(workspace_name: str, dataset_name: str) -> ModelSummary
     see which tables carry measures before drilling in. For full measure expressions,
     descriptions, and column detail use describe_semantic_model instead.
 
-    Returns a dict with:
-        dataset:       dataset name
-        workspace:     workspace name
-        tables:        list of {name, columns (int), measures (int), top_measures (list[str])}
-                       – only visible (non-hidden) tables are included
-        relationships: total relationship count
+    Args:
+        workspace_name: Workspace display name (from list_workspaces)
+        dataset_name:   Dataset display name (from list_datasets)
 
     Args:
         workspace_name: Workspace display name (from list_workspaces)
@@ -538,7 +645,9 @@ async def get_model_info(workspace_name: str, dataset_name: str) -> ModelSummary
         model, err = await _gather_model(workspace_name, dataset_name)
         if err:
             raise ValueError(err)
-        visible = [t for t in model["tables"] if not model_analysis._truthy(t.get("is_hidden"))]
+        visible = [
+            t for t in model["tables"] if not model_analysis._truthy(t.get("is_hidden"))
+        ]
         return ModelSummaryResult(
             dataset=dataset_name,
             workspace=workspace_name,
@@ -547,7 +656,9 @@ async def get_model_info(workspace_name: str, dataset_name: str) -> ModelSummary
                     name=t["name"],
                     columns=len(t.get("columns", [])),
                     measures=len(t.get("measures", [])),
-                    top_measures=[m["name"] for m in t.get("measures", [])[:10] if m.get("name")],
+                    top_measures=[
+                        m["name"] for m in t.get("measures", [])[:10] if m.get("name")
+                    ],
                 )
                 for t in visible
             ],
@@ -558,19 +669,18 @@ async def get_model_info(workspace_name: str, dataset_name: str) -> ModelSummary
 
 
 @mcp.tool()
-async def describe_semantic_model(workspace_name: str, dataset_name: str) -> SemanticModelDescription:
+async def describe_semantic_model(
+    workspace_name: str, dataset_name: str
+) -> SemanticModelDescription:
     """Build a complete agent-ready semantic map of a Power BI model: tables, columns, measures, relationships.
 
     ALWAYS call this (or get_model_info) before writing DAX or answering business questions
     so you use real, verified table/column/measure names. Returns the full model structure
     including every measure's DAX expression, format string, and description.
 
-    Returns a dict with:
-        model.tables:        list of tables, each with columns[] and measures[] (including
-                             expression, format_string, description, is_hidden)
-        model.relationships: list of {from_table, from_column, to_table, to_column, is_active}
-        summary:             human-readable count of visible tables, measures, and relationships
-        guidance:            agent workflow tips (prefer existing measures, use descriptions, etc.)
+    Args:
+        workspace_name: Workspace display name (from list_workspaces)
+        dataset_name:   Dataset display name (from list_datasets)
 
     Use answer_query_plan afterwards to match a user question to a specific measure.
 
@@ -587,31 +697,68 @@ async def describe_semantic_model(workspace_name: str, dataset_name: str) -> Sem
         for r in meta.get("tables", []):
             nm = g(r, "Name")
             if nm:
-                tables[nm] = {"name": nm, "is_hidden": bool(g(r, "IsHidden")),
-                              "description": g(r, "Description") or "", "columns": [], "measures": []}
+                tables[nm] = {
+                    "name": nm,
+                    "is_hidden": bool(g(r, "IsHidden")),
+                    "description": g(r, "Description") or "",
+                    "columns": [],
+                    "measures": [],
+                }
         for r in meta.get("columns", []):
             tn = g(r, "Table") or g(r, "TableName") or ""
-            tables.setdefault(tn, {"name": tn, "is_hidden": False, "description": "", "columns": [], "measures": []})
-            tables[tn]["columns"].append({
-                "name": g(r, "Name"), "data_type": g(r, "DataType"),
-                "is_hidden": bool(g(r, "IsHidden")), "description": g(r, "Description") or "",
-            })
+            tables.setdefault(
+                tn,
+                {
+                    "name": tn,
+                    "is_hidden": False,
+                    "description": "",
+                    "columns": [],
+                    "measures": [],
+                },
+            )
+            tables[tn]["columns"].append(
+                {
+                    "name": g(r, "Name"),
+                    "data_type": g(r, "DataType"),
+                    "is_hidden": bool(g(r, "IsHidden")),
+                    "description": g(r, "Description") or "",
+                }
+            )
         for r in meta.get("measures", []):
             tn = g(r, "Table") or g(r, "TableName") or ""
-            tables.setdefault(tn, {"name": tn, "is_hidden": False, "description": "", "columns": [], "measures": []})
-            tables[tn]["measures"].append({
-                "name": g(r, "Name"), "expression": g(r, "Expression"),
-                "format_string": g(r, "FormatString"), "description": g(r, "Description") or "",
-                "is_hidden": bool(g(r, "IsHidden")),
-            })
-        rel_models = [RelationshipDetail(
-            from_table=g(r, "FromTable"), from_column=g(r, "FromColumn"),
-            to_table=g(r, "ToTable"), to_column=g(r, "ToColumn"),
-            is_active=g(r, "IsActive"),
-        ) for r in meta.get("relationships", [])]
+            tables.setdefault(
+                tn,
+                {
+                    "name": tn,
+                    "is_hidden": False,
+                    "description": "",
+                    "columns": [],
+                    "measures": [],
+                },
+            )
+            tables[tn]["measures"].append(
+                {
+                    "name": g(r, "Name"),
+                    "expression": g(r, "Expression"),
+                    "format_string": g(r, "FormatString"),
+                    "description": g(r, "Description") or "",
+                    "is_hidden": bool(g(r, "IsHidden")),
+                }
+            )
+        rel_models = [
+            RelationshipDetail(
+                from_table=g(r, "FromTable"),
+                from_column=g(r, "FromColumn"),
+                to_table=g(r, "ToTable"),
+                to_column=g(r, "ToColumn"),
+                is_active=g(r, "IsActive"),
+            )
+            for r in meta.get("relationships", [])
+        ]
         table_models = [
             TableDetail(
-                name=t["name"], is_hidden=t.get("is_hidden", False),
+                name=t["name"],
+                is_hidden=t.get("is_hidden", False),
                 description=t.get("description", ""),
                 columns=[ColumnDetail(**c) for c in t.get("columns", [])],
                 measures=[MeasureDetail(**m) for m in t.get("measures", [])],
@@ -619,11 +766,15 @@ async def describe_semantic_model(workspace_name: str, dataset_name: str) -> Sem
             for t in tables.values()
         ]
         visible_tables = [t for t in table_models if not t.is_hidden]
-        measures_vis = [m for t in visible_tables for m in t.measures if not m.is_hidden]
+        measures_vis = [
+            m for t in visible_tables for m in t.measures if not m.is_hidden
+        ]
         return SemanticModelDescription(
-            model=SemanticModel(dataset=dataset_name, tables=table_models, relationships=rel_models),
+            model=SemanticModel(
+                dataset=dataset_name, tables=table_models, relationships=rel_models
+            ),
             summary=f"{len(visible_tables)} visible table(s), {len(measures_vis)} visible measure(s), "
-                    f"{len(rel_models)} relationship(s)",
+            f"{len(rel_models)} relationship(s)",
             guidance=[
                 "Use visible measures first for business metrics; generate DAX only when no suitable measure exists.",
                 "Use table/column descriptions and relationships to choose dimensions and filters.",
@@ -650,13 +801,6 @@ async def answer_query_plan(
     good existing measure is found, prefer it over generating new DAX. Set execute=true
     to also run the draft query and return actual rows in the same call.
 
-    Returns a dict with:
-        plan.question:            the original question
-        plan.candidate_measures:  list of {table, measure, score, description} ranked by relevance
-        plan.draft_dax:           a ready-to-evaluate DAX query using the best candidate
-        plan.recommendation:      "use_existing_measure" | "generate_exploratory_dax"
-        rows:                     query results if execute=true, otherwise []
-
     Args:
         workspace_name: Workspace display name (from list_workspaces)
         dataset_name:   Dataset display name (from list_datasets)
@@ -667,19 +811,31 @@ async def answer_query_plan(
     try:
         sem = await describe_semantic_model(workspace_name, dataset_name)
         model = sem.model
-        qwords = {w.lower() for w in re.findall(r"[A-Za-z0-9_]+", question) if len(w) > 2}
+        qwords = {
+            w.lower() for w in re.findall(r"[A-Za-z0-9_]+", question) if len(w) > 2
+        }
         raw_candidates: list[dict[str, Any]] = []
         for table in model.tables:
             for m in table.measures:
-                hay = " ".join([m.name or "", m.description or "", table.name or ""]).lower()
+                hay = " ".join(
+                    [m.name or "", m.description or "", table.name or ""]
+                ).lower()
                 score = sum(1 for w in qwords if w in hay)
                 if score:
-                    raw_candidates.append({"table": table.name, "measure": m.name,
-                                           "score": score, "description": m.description})
+                    raw_candidates.append(
+                        {
+                            "table": table.name,
+                            "measure": m.name,
+                            "score": score,
+                            "description": m.description,
+                        }
+                    )
         raw_candidates.sort(key=lambda x: x["score"], reverse=True)
         chosen = raw_candidates[:5]
         if chosen:
-            draft_dax = f'EVALUATE ROW("{chosen[0]["measure"]}", [{chosen[0]["measure"]}])'
+            draft_dax = (
+                f'EVALUATE ROW("{chosen[0]["measure"]}", [{chosen[0]["measure"]}])'
+            )
         else:
             first = next((t for t in model.tables if not t.is_hidden), None)
             draft_dax = f"EVALUATE TOPN({max_rows}, '{first.name}')" if first else None
@@ -693,7 +849,9 @@ async def answer_query_plan(
                 question=question,
                 candidate_measures=[CandidateMeasure(**c) for c in chosen],
                 draft_dax=draft_dax,
-                recommendation="use_existing_measure" if chosen else "generate_exploratory_dax",
+                recommendation=(
+                    "use_existing_measure" if chosen else "generate_exploratory_dax"
+                ),
             ),
             rows=rows,
         )
@@ -704,6 +862,7 @@ async def answer_query_plan(
 # ============================================================================
 # Tools – DAX execution & validation
 # ============================================================================
+
 
 @mcp.tool()
 async def execute_dax(
@@ -723,12 +882,6 @@ async def execute_dax(
     DAX must start with EVALUATE or DEFINE … EVALUATE. Examples:
         "EVALUATE TOPN(10, Sales)"
         "EVALUATE SUMMARIZECOLUMNS('Date'[Year], \"Total\", [Total Revenue])"
-
-    Returns a DaxResult with:
-        rows:              list of row dicts, each key is a column name
-        row_count:         number of rows returned (after truncation)
-        execution_time_ms: wall-clock query time in milliseconds
-        truncated:         true if the result was capped at max_rows
 
     Args:
         workspace_name: Workspace display name (from list_workspaces)
@@ -758,8 +911,13 @@ async def execute_dax(
         rows = rows[:cap]
 
         if sec:
-            rows, _ = sec.process_results(rows, query=dax_query, source="cloud",
-                                           model_name=dataset_name, duration_ms=ms)
+            rows, _ = sec.process_results(
+                rows,
+                query=dax_query,
+                source="cloud",
+                model_name=dataset_name,
+                duration_ms=ms,
+            )
 
         return DaxResult(
             rows=rows,
@@ -784,11 +942,6 @@ async def validate_dax(
     parses and evaluates without error. Use this before committing any new or edited
     measure expression. Pass the raw scalar expression (not wrapped in EVALUATE) and
     set as_measure=true for measure bodies; pass a full EVALUATE … query for queries.
-
-    Returns a ValidationResult with:
-        valid: true if the DAX is syntactically and semantically correct
-        error: engine error message if valid=false (null otherwise)
-        probe: the exact DAX probe that was submitted to the engine
 
     Args:
         workspace_name: Workspace display name (from list_workspaces)
@@ -817,6 +970,7 @@ async def validate_dax(
 # Tools – model quality & BPA
 # ============================================================================
 
+
 @mcp.tool()
 async def run_bpa(
     workspace_name: str,
@@ -834,13 +988,6 @@ async def run_bpa(
     Available rule categories: DAX, Formatting, Performance, Maintenance, Error Prevention.
     The full rule catalog is available as the resource powerbi://reference/bpa-rules.
 
-    Returns a dict with:
-        summary.total:       total number of findings
-        summary.by_severity: {"error": n, "warning": n, "info": n}
-        summary.by_category: per-category counts
-        findings:            list of {rule_id, name, severity, category, object, detail}
-                             where object is the table/measure/column that violated the rule
-
     Args:
         workspace_name: Workspace display name (from list_workspaces)
         dataset_name:   Dataset display name (from list_datasets)
@@ -857,7 +1004,9 @@ async def run_bpa(
 
 
 @mcp.tool()
-async def audit_ai_readiness(workspace_name: str, dataset_name: str) -> AiReadinessResult:
+async def audit_ai_readiness(
+    workspace_name: str, dataset_name: str
+) -> AiReadinessResult:
     """Score a semantic model's readiness for AI/Copilot workloads (0–100).
 
     Evaluates description coverage for measures, columns, and tables, plus format string
@@ -865,13 +1014,6 @@ async def audit_ai_readiness(workspace_name: str, dataset_name: str) -> AiReadin
     descriptions to map user questions to the right fields. A score below 70 is a
     warning; below 40 means most AI answers will be unreliable. Use the recommendations
     list to prioritize what to document first.
-
-    Returns a dict with:
-        score:          0–100 composite score
-        grade:          letter grade A–F
-        metrics:        {measures_with_description_pct, measures_with_format_pct,
-                         columns_with_description_pct, tables_with_description_pct, …}
-        recommendations: prioritized list of actions to improve the score
 
     Args:
         workspace_name: Workspace display name (from list_workspaces)
@@ -905,11 +1047,6 @@ async def dax_lint(
     individual measures as you edit them. Follow up with dax_suggest_rewrite for
     auto-fixable before/after rewrites.
 
-    Returns a dict with:
-        summary.measures_scanned: number of expressions analysed
-        summary.by_severity:      finding counts per severity level
-        findings:                 list of {rule_id, severity, object, line, message, suggestion}
-
     Args:
         workspace_name: Workspace display name (from list_workspaces) – ignored if expression given
         dataset_name:   Dataset display name (from list_datasets) – ignored if expression given
@@ -920,7 +1057,9 @@ async def dax_lint(
     try:
         min_rank = _dax_lint_mod.SEVERITY_RANK.get(min_severity.lower(), 1)
         if expression:
-            measures = [{"name": measure_name or "(expression)", "expression": expression}]
+            measures = [
+                {"name": measure_name or "(expression)", "expression": expression}
+            ]
         else:
             model, err = await _gather_model(workspace_name, dataset_name)
             if err:
@@ -928,8 +1067,11 @@ async def dax_lint(
             measures = _measures_from_model(model, measure_name)
         result = _dax_lint_mod.lint_measures(measures)
         if min_rank > 1:
-            filtered = [f for f in result.findings
-                        if _dax_lint_mod.SEVERITY_RANK.get(f.severity, 0) >= min_rank]
+            filtered = [
+                f
+                for f in result.findings
+                if _dax_lint_mod.SEVERITY_RANK.get(f.severity, 0) >= min_rank
+            ]
             return DaxLintResult(summary=result.summary, findings=filtered)
         return result
     except Exception as e:
@@ -950,11 +1092,6 @@ async def dax_suggest_rewrite(
     safe substitution exists (e.g. "x / y" → "DIVIDE(x, y, 0)"). Present these to
     the user for review before applying; they are not automatically committed.
 
-    Returns a dict with:
-        count:    total number of rewrite suggestions
-        rewrites: list of {rule_id, line, before (original snippet), after (fixed snippet),
-                  note (why this change is safe), object (measure name if from live model)}
-
     Args:
         workspace_name: Workspace display name (from list_workspaces) – ignored if expression given
         dataset_name:   Dataset display name (from list_datasets) – ignored if expression given
@@ -964,33 +1101,32 @@ async def dax_suggest_rewrite(
     try:
         rewrites: list[DaxRewrite] = []
         if expression:
-            rewrites = _dax_lint_mod.suggest_rewrites(measure_name or "(expression)", expression)
+            rewrites = _dax_lint_mod.suggest_rewrites(
+                measure_name or "(expression)", expression
+            )
         else:
             model, err = await _gather_model(workspace_name, dataset_name)
             if err:
                 raise ValueError(err)
             for m in _measures_from_model(model, measure_name):
-                rewrites.extend(_dax_lint_mod.suggest_rewrites(m["name"], m["expression"]))
+                rewrites.extend(
+                    _dax_lint_mod.suggest_rewrites(m["name"], m["expression"])
+                )
         return DaxRewriteResult(rewrites=rewrites, count=len(rewrites))
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def analyze_model_storage(workspace_name: str, dataset_name: str) -> ModelStorageResult:
+async def analyze_model_storage(
+    workspace_name: str, dataset_name: str
+) -> ModelStorageResult:
     """Analyse per-table row counts to identify the largest fact tables in a semantic model.
 
     Issues a COUNTROWS DAX query per visible table and sorts the results largest-first.
     Use this to understand model scale, find unexpectedly large tables, and decide where
     to focus aggregation or partition strategies. VertiPaq byte-level sizes are not
     available in REST-only mode; use DAX Studio for column-level compression stats.
-
-    Returns a dict with:
-        table_count: number of visible tables
-        total_rows:  sum of all visible-table row counts
-        tables:      list (up to 50, sorted by row_count desc) of
-                     {name, row_count, column_count, measure_count}
-                     row_count is null if COUNTROWS failed for a table
 
     Args:
         workspace_name: Workspace display name (from list_workspaces)
@@ -1006,18 +1142,24 @@ async def analyze_model_storage(workspace_name: str, dataset_name: str) -> Model
         if err:
             raise ValueError(err)
 
-        visible = [t for t in model["tables"] if not model_analysis._truthy(t.get("is_hidden"))]
+        visible = [
+            t for t in model["tables"] if not model_analysis._truthy(t.get("is_hidden"))
+        ]
         rows_by_table: dict[str, int | None] = {}
         for t in visible:
             nm = t["name"]
             try:
-                res = await loop.run_in_executor(None, run, f"EVALUATE ROW(\"r\", COUNTROWS('{nm}'))")
+                res = await loop.run_in_executor(
+                    None, run, f"EVALUATE ROW(\"r\", COUNTROWS('{nm}'))"
+                )
                 val = next(iter(res[0].values()), None) if res else None
                 rows_by_table[nm] = int(val) if val is not None else None
             except Exception:
                 rows_by_table[nm] = None
 
-        ranked = sorted(visible, key=lambda t: (rows_by_table.get(t["name"]) or 0), reverse=True)
+        ranked = sorted(
+            visible, key=lambda t: (rows_by_table.get(t["name"]) or 0), reverse=True
+        )
         return ModelStorageResult(
             table_count=len(visible),
             total_rows=sum(v for v in rows_by_table.values() if v),
@@ -1048,12 +1190,6 @@ async def analyze_query_performance(
     establish a performance baseline and confirm improvement. For deep storage-engine
     vs formula-engine breakdown, use DAX Studio Server Timings directly.
 
-    Returns a dict with:
-        duration_ms: end-to-end execution time in milliseconds
-        row_count:   number of rows returned
-        hints:       list of optimization advice strings, e.g. slow-query warning,
-                     large-result warning, FILTER() overuse, SUMMARIZE+ADDCOLUMNS pattern
-
     Args:
         workspace_name: Workspace display name (from list_workspaces)
         dataset_name:   Dataset display name (from list_datasets)
@@ -1071,17 +1207,29 @@ async def analyze_query_performance(
         hints = []
         up = dax.upper()
         if ms > 2000:
-            hints.append(f"Slow ({ms:.0f} ms). Check relationship cardinality and avoid row-by-row iterators over large fact tables.")
+            hints.append(
+                f"Slow ({ms:.0f} ms). Check relationship cardinality and avoid row-by-row iterators over large fact tables."
+            )
         if row_count > 10_000:
-            hints.append(f"Large result ({row_count:,} rows). Add TOPN / SUMMARIZECOLUMNS filters.")
+            hints.append(
+                f"Large result ({row_count:,} rows). Add TOPN / SUMMARIZECOLUMNS filters."
+            )
         if up.count("FILTER(") >= 3:
-            hints.append("Multiple FILTER() calls; prefer CALCULATE with boolean filters or KEEPFILTERS where possible.")
+            hints.append(
+                "Multiple FILTER() calls; prefer CALCULATE with boolean filters or KEEPFILTERS where possible."
+            )
         if "ADDCOLUMNS(" in up and "SUMMARIZE(" in up:
-            hints.append("SUMMARIZE+ADDCOLUMNS pattern; SUMMARIZECOLUMNS is usually faster and safer.")
+            hints.append(
+                "SUMMARIZE+ADDCOLUMNS pattern; SUMMARIZECOLUMNS is usually faster and safer."
+            )
         if not hints:
-            hints.append("No obvious red flags. For storage-engine vs formula-engine timings, use DAX Studio Server Timings.")
+            hints.append(
+                "No obvious red flags. For storage-engine vs formula-engine timings, use DAX Studio Server Timings."
+            )
 
-        return QueryPerfResult(duration_ms=round(ms, 1), row_count=row_count, hints=hints)
+        return QueryPerfResult(
+            duration_ms=round(ms, 1), row_count=row_count, hints=hints
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1101,15 +1249,6 @@ async def model_diff(
 
     To create a baseline: call describe_semantic_model, save the "model" key as JSON,
     then pass that file path as baseline_path when you want to compare later.
-
-    Returns a dict with:
-        markdown:           human-readable diff summary in Markdown
-        added_tables:       list of new table names
-        removed_tables:     list of removed table names
-        changed_tables:     list of table names with column/measure changes
-        added_measures:     list of {table, name} for new measures
-        removed_measures:   list of {table, name} for removed measures
-        changed_measures:   list of {table, name, before_expr, after_expr}
 
     Args:
         workspace_name: Workspace display name (from list_workspaces)
@@ -1140,15 +1279,6 @@ async def scan_referential_integrity(
     Power BI's hidden blank row and distort totals and ratios. Include this in the
     pre_deploy_review workflow before publishing a model.
 
-    Returns a dict with:
-        checked:    number of active relationships evaluated
-        clean:      true if no orphan-key violations were found
-        violations: list of objects per violating relationship:
-            relationship: "FactTable[FK] -> DimTable[PK]" notation
-            orphan_keys:  count of missing dimension keys
-            samples:      up to max_samples example orphan key values
-            error:        set instead of orphan_keys if the check query failed
-
     Args:
         workspace_name: Workspace display name (from list_workspaces)
         dataset_name:   Dataset display name (from list_datasets)
@@ -1165,7 +1295,12 @@ async def scan_referential_integrity(
         n = max(1, min(100, max_samples))
         checked, violations = 0, []
         for r in model.get("relationships", []):
-            ft, fc, tt, tc = r.get("from_table"), r.get("from_column"), r.get("to_table"), r.get("to_column")
+            ft, fc, tt, tc = (
+                r.get("from_table"),
+                r.get("from_column"),
+                r.get("to_table"),
+                r.get("to_column"),
+            )
             if not all([ft, fc, tt, tc]):
                 continue
             active = r.get("is_active", True)
@@ -1175,23 +1310,36 @@ async def scan_referential_integrity(
                 continue
             fcol, tcol = _dax_col(ft, fc), _dax_col(tt, tc)
             try:
-                res = await loop.run_in_executor(None, run,
-                    f"EVALUATE ROW(\"Orphans\", COUNTROWS(EXCEPT(DISTINCT({fcol}), DISTINCT({tcol}))))")
+                res = await loop.run_in_executor(
+                    None,
+                    run,
+                    f'EVALUATE ROW("Orphans", COUNTROWS(EXCEPT(DISTINCT({fcol}), DISTINCT({tcol}))))',
+                )
                 count = int(list(res[0].values())[0] or 0) if res else 0
             except Exception as qe:
-                violations.append({"relationship": f"{ft}[{fc}] -> {tt}[{tc}]", "error": str(qe)})
+                violations.append(
+                    {"relationship": f"{ft}[{fc}] -> {tt}[{tc}]", "error": str(qe)}
+                )
                 continue
             checked += 1
             if count > 0:
                 samples: list = []
                 try:
-                    sr = await loop.run_in_executor(None, run,
-                        f"EVALUATE TOPN({n}, EXCEPT(DISTINCT({fcol}), DISTINCT({tcol})))")
+                    sr = await loop.run_in_executor(
+                        None,
+                        run,
+                        f"EVALUATE TOPN({n}, EXCEPT(DISTINCT({fcol}), DISTINCT({tcol})))",
+                    )
                     samples = [list(x.values())[0] for x in (sr or [])]
                 except Exception:
                     pass
-                violations.append({"relationship": f"{ft}[{fc}] -> {tt}[{tc}]",
-                                   "orphan_keys": count, "samples": samples})
+                violations.append(
+                    {
+                        "relationship": f"{ft}[{fc}] -> {tt}[{tc}]",
+                        "orphan_keys": count,
+                        "samples": samples,
+                    }
+                )
         clean = len([v for v in violations if v.get("orphan_keys", 0) > 0]) == 0
         return ReferentialIntegrityResult(
             checked=checked,
@@ -1205,6 +1353,7 @@ async def scan_referential_integrity(
 # ============================================================================
 # Tools – governance & deployment
 # ============================================================================
+
 
 @mcp.tool()
 async def pre_deploy_gate(
@@ -1224,13 +1373,6 @@ async def pre_deploy_gate(
       1. Zero BPA findings at error severity
       2. AI-readiness score >= min_ai_score
       3. If block_on_warnings=true: zero BPA warnings too
-
-    Returns a dict with:
-        passed:       true if all gate conditions are met
-        bpa_errors:   count of error-severity BPA findings
-        bpa_warnings: count of warning-severity BPA findings
-        ai_score:     AI-readiness score (0–100)
-        blocking:     list of "rule_id: object" strings for the blocking errors
 
     Args:
         workspace_name:    Workspace display name (from list_workspaces)
@@ -1275,13 +1417,6 @@ async def bpa_validate_rules(
     category (string), and condition (Python-style expression evaluated against a table,
     column, or measure dict).
 
-    Returns a dict with:
-        valid:      true only if there are zero errors (warnings are acceptable)
-        rule_count: number of rule objects parsed
-        errors:     list of {rule_id, index, message} for blocking issues
-        warnings:   list of {rule_id, index, message} for non-blocking issues
-        fixed_json: corrected JSON string (only present when fix=true and fixes were applied)
-
     Args:
         rules: JSON string containing an array of BPA rule objects
         fix:   Attempt to auto-correct minor issues like missing fields (default: false)
@@ -1300,16 +1435,12 @@ async def verify_audit_integrity() -> AuditIntegrityResult:
     subsequent entries. Use this periodically or after a suspected security incident
     to confirm log integrity. An INTACT result means no entries have been altered or
     deleted; TAMPERED means the chain is broken and the log may have been modified.
-
-    Returns a dict with:
-        valid:        true if the hash chain is intact
-        checked:      number of log entries verified
-        message:      human-readable verdict
-        broken_line:  line number where the chain first breaks (only if valid=false)
     """
     try:
         if not _app_context or not _app_context.security:
-            return AuditIntegrityResult(valid=True, checked=0, message="Security layer not active.")
+            return AuditIntegrityResult(
+                valid=True, checked=0, message="Security layer not active."
+            )
         return _app_context.security.verify_audit_integrity()
     except Exception as e:
         raise ValueError(str(handle_error(e)))
@@ -1319,8 +1450,11 @@ async def verify_audit_integrity() -> AuditIntegrityResult:
 # Tools – diagnostics & ops
 # ============================================================================
 
+
 @mcp.tool()
-async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: int = 10) -> RefreshDoctorResult:
+async def refresh_doctor(
+    workspace_name: str, dataset_name: str, history_count: int = 10
+) -> RefreshDoctorResult:
     """Diagnose dataset refresh failures by fetching history and classifying the root cause.
 
     Retrieves up to history_count refresh attempts from the REST API, identifies failures,
@@ -1332,15 +1466,6 @@ async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: 
     unreachable, capacity throttling, row-level security mismatch, and transient timeouts.
     The full error rule catalog is at powerbi://reference/refresh-errors.
 
-    Returns a dict with:
-        completed:           count of Completed refreshes in the window
-        failed:              count of Failed refreshes in the window
-        consecutive_failures: leading consecutive failure count (triggers auto-disable warning at 3)
-        most_recent_status:  status string of the latest refresh
-        most_recent_end:     ISO timestamp of the latest refresh end
-        diagnosis:           {cause, remediation} for the most recent failure (null if none)
-        warning:             auto-disable warning string if consecutive_failures >= 3 (else null)
-
     Args:
         workspace_name: Workspace display name (from list_workspaces)
         dataset_name:   Dataset display name (from list_datasets)
@@ -1349,14 +1474,23 @@ async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: 
     try:
         conn = _conn()
         loop = asyncio.get_event_loop()
-        wid, did, err = await loop.run_in_executor(None, conn.resolve_dataset, workspace_name, dataset_name)
+        wid, did, err = await loop.run_in_executor(
+            None, conn.resolve_dataset, workspace_name, dataset_name
+        )
         if err:
             raise ValueError(err)
-        history = await loop.run_in_executor(None, conn.get_refresh_history, wid, did, history_count)
+        history = await loop.run_in_executor(
+            None, conn.get_refresh_history, wid, did, history_count
+        )
         if not history:
-            return RefreshDoctorResult(completed=0, failed=0, consecutive_failures=0,
-                                       most_recent_status=None, most_recent_end=None,
-                                       warning="No refresh history found (dataset may never have refreshed, or history expired ~30 days).")
+            return RefreshDoctorResult(
+                completed=0,
+                failed=0,
+                consecutive_failures=0,
+                most_recent_status=None,
+                most_recent_end=None,
+                warning="No refresh history found (dataset may never have refreshed, or history expired ~30 days).",
+            )
 
         completed = sum(1 for h in history if str(h.get("status")) == "Completed")
         failed = [h for h in history if str(h.get("status")) == "Failed"]
@@ -1383,7 +1517,9 @@ async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: 
             warning=(
                 f"{consecutive} consecutive failure(s). Power BI auto-disables a refresh schedule "
                 f"after {_refresh_diag_mod.CONSECUTIVE_FAILURE_DISABLE_THRESHOLD} consecutive failures."
-                if consecutive >= _refresh_diag_mod.CONSECUTIVE_FAILURE_DISABLE_THRESHOLD - 1 else None
+                if consecutive
+                >= _refresh_diag_mod.CONSECUTIVE_FAILURE_DISABLE_THRESHOLD - 1
+                else None
             ),
         )
     except Exception as e:
@@ -1391,7 +1527,9 @@ async def refresh_doctor(workspace_name: str, dataset_name: str, history_count: 
 
 
 @mcp.tool()
-async def find_unused_objects(workspace_name: str, dataset_name: str) -> UnusedObjectsResult:
+async def find_unused_objects(
+    workspace_name: str, dataset_name: str
+) -> UnusedObjectsResult:
     """Identify measures and columns not referenced by any other model calculation.
 
     Queries INFO.CALCDEPENDENCY() to find all referenced objects, then reports everything
@@ -1403,12 +1541,6 @@ async def find_unused_objects(workspace_name: str, dataset_name: str) -> UnusedO
     report visual usage is not checked – objects used only by report visuals (not by
     other model objects) will appear unused and should not be deleted without confirming
     with the report author.
-
-    Returns a dict with:
-        unused_measures:   list of "Table[Measure]" strings for unreferenced measures
-        unused_columns:    list of "Table[Column]" strings for unreferenced columns
-        note:              reminder about the report-visual limitation
-        error:             present instead of the above if INFO.CALCDEPENDENCY is unavailable
 
     Args:
         workspace_name: Workspace display name (from list_workspaces)
@@ -1423,7 +1555,9 @@ async def find_unused_objects(workspace_name: str, dataset_name: str) -> UnusedO
         if err:
             raise ValueError(err)
         try:
-            dep_rows = await loop.run_in_executor(None, run, "EVALUATE INFO.CALCDEPENDENCY()")
+            dep_rows = await loop.run_in_executor(
+                None, run, "EVALUATE INFO.CALCDEPENDENCY()"
+            )
         except Exception as e:
             return UnusedObjectsResult(
                 error=(
@@ -1478,14 +1612,6 @@ async def impact_analysis(
     LIMITATION: INFO.CALCDEPENDENCY requires write permission on the model. In REST
     read-only mode an error dict is returned instead of dependency results.
 
-    Returns a dict with:
-        object_name:     the queried object name
-        table_name:      the table scope used (if provided)
-        dependent_count: number of objects that reference this one
-        dependents:      list of {type, table, object} for each dependent
-        safe_to_change:  true if dependent_count == 0 (no model-level dependents)
-        error:           present instead of the above if INFO.CALCDEPENDENCY is unavailable
-
     Args:
         workspace_name: Workspace display name (from list_workspaces)
         dataset_name:   Dataset display name (from list_datasets)
@@ -1503,7 +1629,9 @@ async def impact_analysis(
             et = table_name.replace('"', '""')
             filt = f'[REFERENCED_TABLE] = "{et}" && {filt}'
         try:
-            rows = await loop.run_in_executor(None, run, f"EVALUATE FILTER(INFO.CALCDEPENDENCY(), {filt})")
+            rows = await loop.run_in_executor(
+                None, run, f"EVALUATE FILTER(INFO.CALCDEPENDENCY(), {filt})"
+            )
         except Exception as e:
             # INFO.CALCDEPENDENCY requires write permission; return a graceful error model
             return ImpactAnalysisResult(
@@ -1546,19 +1674,6 @@ async def run_dax_tests(
     key run in INFO mode (result is reported but not graded). Use this to build a
     regression suite that catches accidental measure breaks after model changes.
 
-    Each test dict schema:
-        name      (str, optional):   human label shown in results
-        dax       (str, required):   DAX query returning a single scalar value, e.g.
-                                     'EVALUATE ROW("v", [Total Revenue])'
-        expected  (any, optional):   expected scalar value; omit to run without assertion
-        tolerance (float, optional): absolute numeric tolerance for float comparisons (default: 0)
-
-    Returns a dict with:
-        passed:     count of tests that returned the expected value
-        total:      count of tests with an expected value (PASS/FAIL, not INFO)
-        all_passed: true if passed == total and total > 0
-        results:    list of {name, status (PASS|FAIL|INFO|ERROR), detail}
-
     Args:
         workspace_name: Workspace display name (from list_workspaces)
         dataset_name:   Dataset display name (from list_datasets)
@@ -1582,13 +1697,21 @@ async def run_dax_tests(
                 rows = await loop.run_in_executor(None, run, dq)
                 actual = next(iter(rows[0].values()), None) if rows else None
             except Exception as e:
-                results.append({"name": name, "status": "ERROR", "detail": str(e)[:200]})
+                results.append(
+                    {"name": name, "status": "ERROR", "detail": str(e)[:200]}
+                )
                 continue
             if "expected" not in t:
-                results.append({"name": name, "status": "INFO", "detail": f"actual={actual}"})
+                results.append(
+                    {"name": name, "status": "INFO", "detail": f"actual={actual}"}
+                )
                 continue
-            ok, detail = model_analysis.dax_test_verdict(actual, t["expected"], t.get("tolerance", 0))
-            results.append({"name": name, "status": "PASS" if ok else "FAIL", "detail": detail})
+            ok, detail = model_analysis.dax_test_verdict(
+                actual, t["expected"], t.get("tolerance", 0)
+            )
+            results.append(
+                {"name": name, "status": "PASS" if ok else "FAIL", "detail": detail}
+            )
             if ok:
                 passed += 1
 
@@ -1608,6 +1731,7 @@ async def run_dax_tests(
 # Tools – fleet / governance ops (admin-gated)
 # ============================================================================
 
+
 @mcp.tool()
 async def cross_workspace_lineage(
     workspace_ids: list[str] | None = None,
@@ -1624,13 +1748,6 @@ async def cross_workspace_lineage(
     REQUIRES: Service Principal must be in an allowed security group with the tenant-level
     read-only admin APIs enabled (Power BI admin settings). Scans are asynchronous;
     use cache_path to store results and avoid re-scanning on every call.
-
-    Returns a dict with (via summarize_scan):
-        workspace_count:              number of workspaces scanned
-        dataset_count:                total datasets found
-        datasets_without_rls:         list of datasets with no row-level security roles
-        datasets_without_labels:      list of datasets with no sensitivity label
-        dataset_detail:               lineage and config for dataset_name if provided
 
     Args:
         workspace_ids: Workspace GUIDs to scan; auto-discovers up to 100 workspaces if omitted
@@ -1655,12 +1772,16 @@ async def cross_workspace_lineage(
             ids = ids[:100]
             if not ids:
                 raise ValueError("No workspaces found to scan.")
-            started = await loop.run_in_executor(None, conn.admin_post_workspace_info, ids, True)
+            started = await loop.run_in_executor(
+                None, conn.admin_post_workspace_info, ids, True
+            )
             scan_id = started.get("id")
             if not scan_id:
                 raise ValueError(f"Scan did not start: {started}")
             for _ in range(20):
-                st = await loop.run_in_executor(None, conn.admin_get_scan_status, scan_id)
+                st = await loop.run_in_executor(
+                    None, conn.admin_get_scan_status, scan_id
+                )
                 status = str(st.get("status", "")).lower()
                 if status == "succeeded":
                     break
@@ -1668,7 +1789,9 @@ async def cross_workspace_lineage(
                     raise ValueError(f"Scan failed: {st.get('error') or st}")
                 await asyncio.sleep(15)
             else:
-                raise ValueError("Scan still running after the wait. Retry with cache_path.")
+                raise ValueError(
+                    "Scan still running after the wait. Retry with cache_path."
+                )
             scan = await loop.run_in_executor(None, conn.admin_get_scan_result, scan_id)
             if cache_path:
                 try:
@@ -1691,11 +1814,6 @@ async def fleet_refresh_monitor(workspace_ids: list[str]) -> FleetRefreshResult:
     refresh-failure alert dashboard. For single-dataset diagnosis with full history, use
     refresh_doctor instead.
 
-    Returns a dict with:
-        checked:      total refreshable datasets inspected
-        failed_count: number of datasets whose last refresh failed
-        failures:     list of {dataset (name), end_time (ISO), cause (string)} per failure
-
     Args:
         workspace_ids: List of workspace GUIDs to inspect (from list_workspaces)
     """
@@ -1713,19 +1831,33 @@ async def fleet_refresh_monitor(workspace_ids: list[str]) -> FleetRefreshResult:
                     continue
                 checked += 1
                 try:
-                    hist = await loop.run_in_executor(None, conn.get_refresh_history, wid, ds["id"], 1)
+                    hist = await loop.run_in_executor(
+                        None, conn.get_refresh_history, wid, ds["id"], 1
+                    )
                 except Exception:
                     continue
                 if hist and str(hist[0].get("status")) == "Failed":
-                    diag = _refresh_diag_mod.classify_refresh_error(hist[0].get("serviceExceptionJson") or "")
-                    failures.append(RefreshFailure(dataset=ds["name"], end_time=hist[0].get("endTime"), cause=diag.cause))
-        return FleetRefreshResult(checked=checked, failed_count=len(failures), failures=failures)
+                    diag = _refresh_diag_mod.classify_refresh_error(
+                        hist[0].get("serviceExceptionJson") or ""
+                    )
+                    failures.append(
+                        RefreshFailure(
+                            dataset=ds["name"],
+                            end_time=hist[0].get("endTime"),
+                            cause=diag.cause,
+                        )
+                    )
+        return FleetRefreshResult(
+            checked=checked, failed_count=len(failures), failures=failures
+        )
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
 
 @mcp.tool()
-async def usage_and_orphan_analytics(date: str | None = None, filter: str | None = None) -> UsageAnalyticsResult:
+async def usage_and_orphan_analytics(
+    date: str | None = None, filter: str | None = None
+) -> UsageAnalyticsResult:
     """Fetch and aggregate tenant-wide Power BI activity events for a single UTC day.
 
     Calls the Admin Activity Events API and aggregates all events into top-users,
@@ -1735,24 +1867,20 @@ async def usage_and_orphan_analytics(date: str | None = None, filter: str | None
 
     REQUIRES: Service Principal with read-only admin APIs enabled.
 
-    Returns a dict with:
-        total_events:        total event count for the day
-        distinct_users:      number of unique users
-        top_users:           list of {userId, count} sorted by activity desc
-        top_reports:         list of {reportName, count} sorted by view count desc
-        by_activity:         dict of activityType → count
-
     Args:
         date:   UTC date in YYYY-MM-DD format; defaults to yesterday if omitted
         filter: Optional OData $filter expression, e.g. "Activity eq 'ViewReport'"
     """
     try:
         from datetime import datetime, timezone, timedelta
+
         conn = _conn()
         if not date:
             date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
         loop = asyncio.get_event_loop()
-        events = await loop.run_in_executor(None, conn.admin_get_activity_events_for_day, date, filter)
+        events = await loop.run_in_executor(
+            None, conn.admin_get_activity_events_for_day, date, filter
+        )
         return aggregate_activity(events)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
@@ -1761,6 +1889,7 @@ async def usage_and_orphan_analytics(date: str | None = None, filter: str | None
 # ============================================================================
 # Tools – security & audit
 # ============================================================================
+
 
 @mcp.tool()
 async def security_status() -> SecurityStatus:
@@ -1771,17 +1900,15 @@ async def security_status() -> SecurityStatus:
     chain of every query), and access policies (column/table blocking rules from
     config/policies.yaml). Check this before querying sensitive datasets to understand
     what protection is in place.
-
-    Returns a SecurityStatus with:
-        pii_detection_enabled:   true if results are scanned and masked for PII patterns
-        audit_logging_enabled:   true if every query is recorded in the audit log
-        access_policies_enabled: true if column/table blocking policies are enforced
-        active_policies:         list of table names that have at least one column policy
     """
     try:
         if not _app_context or not _app_context.security:
-            return SecurityStatus(pii_detection_enabled=False, audit_logging_enabled=False,
-                                  access_policies_enabled=False, active_policies=[])
+            return SecurityStatus(
+                pii_detection_enabled=False,
+                audit_logging_enabled=False,
+                access_policies_enabled=False,
+                active_policies=[],
+            )
         sec = _app_context.security
         summary = sec.get_policy_summary()
         return SecurityStatus(
@@ -1804,13 +1931,6 @@ async def security_audit_log(count: int = 10) -> list[AuditEvent]:
     whether any sensitive data was accessed. Use verify_audit_integrity to confirm the
     log has not been altered.
 
-    Each entry includes:
-        timestamp:   ISO-8601 when the event was recorded
-        event_type:  "query", "policy_block", "pii_detected", etc.
-        query:       the DAX query text (may be redacted for secrets)
-        dataset:     dataset name
-        row_count:   rows returned after policies were applied
-
     Args:
         count: Number of most-recent entries to return (default: 10, max: 100)
     """
@@ -1820,7 +1940,9 @@ async def security_audit_log(count: int = 10) -> list[AuditEvent]:
         sec = _app_context.security
         if not sec.audit_logger:
             return []
-        return [AuditEvent(**e) for e in sec.audit_logger.get_recent_events(min(count, 100))]
+        return [
+            AuditEvent(**e) for e in sec.audit_logger.get_recent_events(min(count, 100))
+        ]
     except Exception as e:
         raise ValueError(str(handle_error(e)))
 
@@ -1828,6 +1950,7 @@ async def security_audit_log(count: int = 10) -> list[AuditEvent]:
 # ============================================================================
 # Tools – DAX generation
 # ============================================================================
+
 
 @mcp.tool()
 async def generate_measure_suite(
@@ -1862,13 +1985,6 @@ async def generate_measure_suite(
         column_stats       – SUM, AVERAGE, MIN, MAX, DISTINCTCOUNT for a fact column.
                              Requires: column (e.g. "Sales[Amount]")
 
-    Each returned measure dict contains:
-        name:           display name for the measure
-        expression:     the DAX scalar expression (without the leading "[MeasureName] =")
-        format_string:  e.g. "#,##0", "#,##0.00", "0.0%"
-        display_folder: folder name for the Fields pane
-        description:    plain-language description suitable for Copilot
-
     Args:
         kind:              time_intelligence | ratios | ranking | column_stats
         base_measure:      Name of the existing base measure (required for time_intelligence/ratios/ranking)
@@ -1879,11 +1995,18 @@ async def generate_measure_suite(
         display_folder:    Override the display folder name (optional)
     """
     try:
-        params = {k: v for k, v in {
-            "base_measure": base_measure, "date_column": date_column,
-            "dimension_columns": dimension_columns, "column": column,
-            "variants": variants, "display_folder": display_folder,
-        }.items() if v is not None}
+        params = {
+            k: v
+            for k, v in {
+                "base_measure": base_measure,
+                "date_column": date_column,
+                "dimension_columns": dimension_columns,
+                "column": column,
+                "variants": variants,
+                "display_folder": display_folder,
+            }.items()
+            if v is not None
+        }
         return dax_generator.generate_suite(kind, **params)
     except Exception as e:
         raise ValueError(str(handle_error(e)))
@@ -1893,21 +2016,17 @@ async def generate_measure_suite(
 # Tools – governance helpers
 # ============================================================================
 
+
 @mcp.tool()
-async def summarize_security_scan(scan: dict, dataset_name: str | None = None) -> CrossWorkspaceLineageResult:
+async def summarize_security_scan(
+    scan: dict, dataset_name: str | None = None
+) -> CrossWorkspaceLineageResult:
     """Produce a governance summary from a raw Admin Scanner JSON payload.
 
     Extracts RLS coverage, sensitivity label coverage, and dataset lineage from the
     Admin Scanner result object. Use this to process a scan result that was obtained
     externally or loaded from a file, without re-triggering the scan. For a full
     end-to-end scan + summary in one call, use cross_workspace_lineage instead.
-
-    Returns a dict with:
-        workspace_count:          number of workspaces in the scan
-        dataset_count:            total datasets found
-        datasets_without_rls:     list of dataset names with no RLS roles configured
-        datasets_without_labels:  list of dataset names with no sensitivity label
-        dataset_detail:           full lineage/config for dataset_name if provided
 
     Args:
         scan:         Raw Admin Scanner scan result JSON (from cross_workspace_lineage or file)
@@ -1929,13 +2048,6 @@ async def aggregate_user_activity(events: list[dict]) -> UsageAnalyticsResult:
     already have a batch of event objects from a prior call and want to re-aggregate
     or filter them without re-fetching.
 
-    Returns a dict with:
-        total_events:   count of events processed
-        distinct_users: count of unique user identities
-        top_users:      list of {userId, count} sorted descending
-        top_reports:    list of {reportName, count} sorted descending
-        by_activity:    dict of activityType → count
-
     Args:
         events: List of activity event dicts (each must have activityEventType and userId)
     """
@@ -1951,6 +2063,7 @@ async def aggregate_user_activity(events: list[dict]) -> UsageAnalyticsResult:
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) > 1 and sys.argv[1] == "stdio":
         logger.info("Starting stdio server")
         mcp.run(transport="stdio")
