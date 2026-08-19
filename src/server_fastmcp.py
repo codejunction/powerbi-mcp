@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from fastmcp.dependencies import CurrentContext
+from fastmcp.server.context import Context
 from pydantic import BaseModel, Field
 
 from powerbi_rest_connector import PowerBIRestConnector
@@ -48,9 +50,14 @@ class AppContext(BaseModel):
     security: Optional[SecurityLayer] = None
 
 
+# Module-level app context (set during lifespan, accessed by tools)
+_app_context: Optional[AppContext] = None
+
+
 @asynccontextmanager
 async def app_lifespan(mcp: FastMCP):
     """Manage application lifecycle with type-safe context."""
+    global _app_context
     logger.info("Initializing Power BI MCP Server")
 
     tenant_id = os.getenv("TENANT_ID", "")
@@ -76,9 +83,12 @@ async def app_lifespan(mcp: FastMCP):
         enable_policies=os.getenv("ENABLE_POLICIES", "true").lower() == "true",
     )
 
+    _app_context = AppContext(rest_connector=rest_connector, security=security)
+
     try:
-        yield AppContext(rest_connector=rest_connector, security=security)
+        yield _app_context
     finally:
+        _app_context = None
         logger.info("Shutting down Power BI MCP Server")
 
 
@@ -97,7 +107,7 @@ mcp = FastMCP(
 # ============================================================================
 
 @mcp.tool()
-async def list_workspaces(ctx) -> list[WorkspaceInfo]:
+async def list_workspaces(ctx: Context = CurrentContext()) -> list[WorkspaceInfo]:
     """
     List all Power BI Service workspaces accessible to the Service Principal.
 
@@ -109,11 +119,11 @@ async def list_workspaces(ctx) -> list[WorkspaceInfo]:
         List[WorkspaceInfo]: List of workspace information objects
     """
     try:
-        app_ctx: AppContext = ctx.request_context.lifespan_context
-        if not app_ctx.rest_connector:
+        app_ctx = _app_context
+        if not app_ctx or not app_ctx.rest_connector:
             raise ValueError("REST connector not initialized")
 
-        workspaces = await app_ctx.rest_connector.list_workspaces()
+        workspaces = app_ctx.rest_connector.list_workspaces()
         return [WorkspaceInfo(**ws) for ws in workspaces]
     except Exception as e:
         error = handle_error(e)
@@ -121,7 +131,7 @@ async def list_workspaces(ctx) -> list[WorkspaceInfo]:
 
 
 @mcp.tool()
-async def list_datasets(ctx, workspace_id: str) -> list[DatasetInfo]:
+async def list_datasets(workspace_id: str, ctx: Context = CurrentContext()) -> list[DatasetInfo]:
     """
     List all datasets in a Power BI Service workspace.
 
@@ -137,11 +147,11 @@ async def list_datasets(ctx, workspace_id: str) -> list[DatasetInfo]:
         List[DatasetInfo]: List of dataset information objects
     """
     try:
-        app_ctx: AppContext = ctx.request_context.lifespan_context
-        if not app_ctx.rest_connector:
+        app_ctx = _app_context
+        if not app_ctx or not app_ctx.rest_connector:
             raise ValueError("REST connector not initialized")
 
-        datasets = await app_ctx.rest_connector.list_datasets(workspace_id)
+        datasets = app_ctx.rest_connector.list_datasets(workspace_id)
         return [DatasetInfo(**ds) for ds in datasets]
     except Exception as e:
         error = handle_error(e)
@@ -149,7 +159,7 @@ async def list_datasets(ctx, workspace_id: str) -> list[DatasetInfo]:
 
 
 @mcp.tool()
-async def list_tables(ctx, workspace_name: str, dataset_name: str) -> list[TableInfo]:
+async def list_tables(workspace_name: str, dataset_name: str, ctx: Context = CurrentContext()) -> list[TableInfo]:
     """
     List all tables in a Power BI Service dataset via REST API.
 
@@ -165,12 +175,12 @@ async def list_tables(ctx, workspace_name: str, dataset_name: str) -> list[Table
         List[TableInfo]: List of table information objects
     """
     try:
-        app_ctx: AppContext = ctx.request_context.lifespan_context
-        if not app_ctx.rest_connector:
+        app_ctx = _app_context
+        if not app_ctx or not app_ctx.rest_connector:
             raise ValueError("REST connector not initialized")
 
         # Get workspace ID from name
-        workspaces = await app_ctx.rest_connector.list_workspaces()
+        workspaces = app_ctx.rest_connector.list_workspaces()
         workspace_id = None
         for ws in workspaces:
             if ws.get("name") == workspace_name:
@@ -181,7 +191,7 @@ async def list_tables(ctx, workspace_name: str, dataset_name: str) -> list[Table
             raise ValueError(f"Workspace '{workspace_name}' not found")
 
         # Get dataset ID from name
-        datasets = await app_ctx.rest_connector.list_datasets(workspace_id)
+        datasets = app_ctx.rest_connector.list_datasets(workspace_id)
         dataset_id = None
         for ds in datasets:
             if ds.get("name") == dataset_name:
@@ -191,7 +201,7 @@ async def list_tables(ctx, workspace_name: str, dataset_name: str) -> list[Table
         if not dataset_id:
             raise ValueError(f"Dataset '{dataset_name}' not found")
 
-        tables = await app_ctx.rest_connector.list_tables(workspace_id, dataset_id)
+        tables = app_ctx.rest_connector.list_tables(workspace_id, dataset_id)
         return [TableInfo(**table) for table in tables]
     except Exception as e:
         error = handle_error(e)
@@ -200,10 +210,10 @@ async def list_tables(ctx, workspace_name: str, dataset_name: str) -> list[Table
 
 @mcp.tool()
 async def list_columns(
-    ctx,
     workspace_name: str,
     dataset_name: str,
-    table_name: str
+    table_name: str,
+
 ) -> list[ColumnInfo]:
     """
     List columns for a table in a Power BI Service dataset.
@@ -222,22 +232,22 @@ async def list_columns(
         List[ColumnInfo]: List of column information objects
     """
     try:
-        app_ctx: AppContext = ctx.request_context.lifespan_context
-        if not app_ctx.rest_connector:
+        app_ctx = _app_context
+        if not app_ctx or not app_ctx.rest_connector:
             raise ValueError("REST connector not initialized")
 
         # Get workspace and dataset IDs
-        workspaces = await app_ctx.rest_connector.list_workspaces()
+        workspaces = app_ctx.rest_connector.list_workspaces()
         workspace_id = next((ws.get("id") for ws in workspaces if ws.get("name") == workspace_name), None)
         if not workspace_id:
             raise ValueError(f"Workspace '{workspace_name}' not found")
 
-        datasets = await app_ctx.rest_connector.list_datasets(workspace_id)
+        datasets = app_ctx.rest_connector.list_datasets(workspace_id)
         dataset_id = next((ds.get("id") for ds in datasets if ds.get("name") == dataset_name), None)
         if not dataset_id:
             raise ValueError(f"Dataset '{dataset_name}' not found")
 
-        columns = await app_ctx.rest_connector.list_columns(workspace_id, dataset_id, table_name)
+        columns = app_ctx.rest_connector.list_columns(workspace_id, dataset_id, table_name)
         return [ColumnInfo(**col) for col in columns]
     except Exception as e:
         error = handle_error(e)
@@ -246,10 +256,10 @@ async def list_columns(
 
 @mcp.tool()
 async def execute_dax(
-    ctx,
     workspace_name: str,
     dataset_name: str,
-    dax_query: str
+    dax_query: str,
+
 ) -> DaxResult:
     """
     Execute a DAX query against a Power BI Service dataset.
@@ -268,8 +278,8 @@ async def execute_dax(
         DaxResult: Object containing query results, execution time, and row count
     """
     try:
-        app_ctx: AppContext = ctx.request_context.lifespan_context
-        if not app_ctx.rest_connector:
+        app_ctx = _app_context
+        if not app_ctx or not app_ctx.rest_connector:
             raise ValueError("REST connector not initialized")
 
         # Apply security checks
@@ -277,19 +287,19 @@ async def execute_dax(
             dax_query = app_ctx.security.redact_pii(dax_query)
 
         # Get workspace and dataset IDs
-        workspaces = await app_ctx.rest_connector.list_workspaces()
+        workspaces = app_ctx.rest_connector.list_workspaces()
         workspace_id = next((ws.get("id") for ws in workspaces if ws.get("name") == workspace_name), None)
         if not workspace_id:
             raise ValueError(f"Workspace '{workspace_name}' not found")
 
-        datasets = await app_ctx.rest_connector.list_datasets(workspace_id)
+        datasets = app_ctx.rest_connector.list_datasets(workspace_id)
         dataset_id = next((ds.get("id") for ds in datasets if ds.get("name") == dataset_name), None)
         if not dataset_id:
             raise ValueError(f"Dataset '{dataset_name}' not found")
 
         # Execute query
         start_time = asyncio.get_event_loop().time()
-        rows = await app_ctx.rest_connector.execute_dax(workspace_id, dataset_id, dax_query)
+        rows = app_ctx.rest_connector.execute_dax(workspace_id, dataset_id, dax_query)
         execution_time = (asyncio.get_event_loop().time() - start_time) * 1000
 
         # Apply security to results
@@ -308,11 +318,11 @@ async def execute_dax(
 
 @mcp.tool()
 async def validate_dax(
-    ctx,
     dax: str,
     as_measure: bool = False,
     workspace_name: str = "",
-    dataset_name: str = ""
+    dataset_name: str = "",
+
 ) -> ValidationResult:
     """
     Validate a DAX query or measure expression against the connected model.
@@ -332,8 +342,8 @@ async def validate_dax(
         ValidationResult: Object containing validation status, error message, and probe query
     """
     try:
-        app_ctx: AppContext = ctx.request_context.lifespan_context
-        if not app_ctx.rest_connector:
+        app_ctx = _app_context
+        if not app_ctx or not app_ctx.rest_connector:
             raise ValueError("REST connector not initialized")
 
         if not workspace_name or not dataset_name:
@@ -343,12 +353,12 @@ async def validate_dax(
             )
 
         # Get workspace and dataset IDs
-        workspaces = await app_ctx.rest_connector.list_workspaces()
+        workspaces = app_ctx.rest_connector.list_workspaces()
         workspace_id = next((ws.get("id") for ws in workspaces if ws.get("name") == workspace_name), None)
         if not workspace_id:
             return ValidationResult(valid=False, error=f"Workspace '{workspace_name}' not found")
 
-        datasets = await app_ctx.rest_connector.list_datasets(workspace_id)
+        datasets = app_ctx.rest_connector.list_datasets(workspace_id)
         dataset_id = next((ds.get("id") for ds in datasets if ds.get("name") == dataset_name), None)
         if not dataset_id:
             return ValidationResult(valid=False, error=f"Dataset '{dataset_name}' not found")
@@ -360,7 +370,7 @@ async def validate_dax(
             probe = dax
 
         try:
-            await app_ctx.rest_connector.execute_dax(workspace_id, dataset_id, probe)
+            app_ctx.rest_connector.execute_dax(workspace_id, dataset_id, probe)
             return ValidationResult(valid=True, probe=probe)
         except Exception as e:
             return ValidationResult(valid=False, error=str(e), probe=probe)
@@ -641,7 +651,7 @@ async def cloud_schema_template(workspace: str, dataset: str) -> str:
 # ============================================================================
 
 @mcp.tool()
-async def security_status(ctx) -> SecurityStatus:
+async def security_status() -> SecurityStatus:
     """
     Get the current security settings and status.
 
@@ -654,8 +664,8 @@ async def security_status(ctx) -> SecurityStatus:
         SecurityStatus: Object containing current security configuration
     """
     try:
-        app_ctx: AppContext = ctx.request_context.lifespan_context
-        if not app_ctx.security:
+        app_ctx = _app_context
+        if not app_ctx or not app_ctx.security:
             return SecurityStatus(
                 pii_detection_enabled=False,
                 audit_logging_enabled=False,
@@ -675,7 +685,7 @@ async def security_status(ctx) -> SecurityStatus:
 
 
 @mcp.tool()
-async def security_audit_log(ctx, count: int = 10) -> list[AuditLogEntry]:
+async def security_audit_log(count: int = 10) -> list[AuditLogEntry]:
     """
     View recent entries from the security audit log.
 
@@ -691,8 +701,8 @@ async def security_audit_log(ctx, count: int = 10) -> list[AuditLogEntry]:
         List[AuditLogEntry]: List of recent audit log entries
     """
     try:
-        app_ctx: AppContext = ctx.request_context.lifespan_context
-        if not app_ctx.security:
+        app_ctx = _app_context
+        if not app_ctx or not app_ctx.security:
             return []
 
         entries = app_ctx.security.get_recent_entries(count)
@@ -708,11 +718,11 @@ async def security_audit_log(ctx, count: int = 10) -> list[AuditLogEntry]:
 
 @mcp.tool()
 async def generate_measure_suite(
-    ctx,
     kind: str,
     table_name: Optional[str] = None,
     base_column: Optional[str] = None,
-    base_measure: Optional[str] = None
+    base_measure: Optional[str] = None,
+
 ) -> list[dict]:
     """
     Generate a suite of DAX measures from a base measure or column.
@@ -752,7 +762,7 @@ async def generate_measure_suite(
 # ============================================================================
 
 @mcp.tool()
-async def analyze_bpa(ctx, model: dict) -> dict:
+async def analyze_bpa(model: dict) -> dict:
     """
     Run Best Practice Analyzer rules on a model.
 
@@ -775,7 +785,7 @@ async def analyze_bpa(ctx, model: dict) -> dict:
 
 
 @mcp.tool()
-async def audit_ai_readiness(ctx, model: dict) -> dict:
+async def audit_ai_readiness(model: dict) -> dict:
     """
     Audit a model for AI-readiness and Copilot optimization.
 
@@ -802,7 +812,7 @@ async def audit_ai_readiness(ctx, model: dict) -> dict:
 # ============================================================================
 
 @mcp.tool()
-async def pre_deploy_gate(ctx, model: dict, strict: bool = True) -> dict:
+async def pre_deploy_gate(model: dict, strict: bool = True) -> dict:
     """
     Run pre-deployment gate checks on a model.
 
@@ -847,7 +857,7 @@ async def pre_deploy_gate(ctx, model: dict, strict: bool = True) -> dict:
 
 
 @mcp.tool()
-async def summarize_security_scan(ctx, scan: dict, dataset_name: Optional[str] = None) -> dict:
+async def summarize_security_scan(scan: dict, dataset_name: Optional[str] = None) -> dict:
     """
     Summarize a security scan result.
 
@@ -870,7 +880,7 @@ async def summarize_security_scan(ctx, scan: dict, dataset_name: Optional[str] =
 
 
 @mcp.tool()
-async def aggregate_user_activity(ctx, events: list[dict]) -> dict:
+async def aggregate_user_activity(events: list[dict]) -> dict:
     """
     Aggregate user activity events.
 
