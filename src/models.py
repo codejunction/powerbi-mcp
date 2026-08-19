@@ -13,8 +13,8 @@ class WorkspaceInfo(BaseModel):
     """Power BI workspace information."""
     id: str = Field(description="Workspace ID")
     name: str = Field(description="Workspace name")
-    capacity_id: Optional[str] = Field(default=None, description="Capacity ID")
-    default_dataset_id: Optional[str] = Field(default=None, description="Default dataset ID")
+    type: Optional[str] = Field(default="Workspace", description="Workspace type")
+    state: Optional[str] = Field(default="Active", description="Workspace state")
 
 
 class DatasetInfo(BaseModel):
@@ -22,7 +22,7 @@ class DatasetInfo(BaseModel):
     id: str = Field(description="Dataset ID")
     name: str = Field(description="Dataset name")
     workspace_id: str = Field(description="Workspace ID")
-    configured_by: Optional[str] = Field(default=None, description="Configured by user")
+    configured_by: Optional[str] = Field(default="Unknown", description="Configured by user")
     is_refreshable: bool = Field(default=False, description="Whether dataset is refreshable")
     is_on_prem_gateway_required: bool = Field(default=False, description="Whether on-prem gateway is required")
 

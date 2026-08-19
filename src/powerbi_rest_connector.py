@@ -129,6 +129,7 @@ class PowerBIRestConnector:
                 {
                     "id": ds["id"],
                     "name": ds["name"],
+                    "workspace_id": workspace_id,
                     "configuredBy": ds.get("configuredBy", "Unknown"),
                     "isRefreshable": ds.get("isRefreshable", False),
                 }
@@ -169,7 +170,86 @@ class PowerBIRestConnector:
             return []
         return tables[0].get("rows") or []
 
+    def list_tables(self, workspace_id: str, dataset_id: str) -> List[Dict[str, Any]]:
+        """List tables in a dataset using INFO.VIEW.TABLES."""
+        try:
+            if not self.access_token:
+                if not self.authenticate():
+                    return []
+
+            tables = self.execute_dax_query(workspace_id, dataset_id, "EVALUATE INFO.VIEW.TABLES()")
+            logger.info(f"Found {len(tables)} table(s)")
+
+            return [
+                {
+                    "name": table.get("Name", ""),
+                    "rows": table.get("RowCount", 0),
+                    "is_hidden": table.get("IsHidden", False),
+                }
+                for table in tables
+            ]
+
+        except Exception as e:
+            logger.error(f"Failed to list tables: {str(e)}")
+            return []
+
+    def list_columns(self, workspace_id: str, dataset_id: str, table_name: str) -> List[Dict[str, Any]]:
+        """List columns in a table using INFO.VIEW.COLUMNS."""
+        try:
+            if not self.access_token:
+                if not self.authenticate():
+                    return []
+
+            # Filter columns for the specific table
+            dax = f"EVALUATE FILTER(INFO.VIEW.COLUMNS(), [Table] = \"{table_name}\")"
+            columns = self.execute_dax_query(workspace_id, dataset_id, dax)
+            logger.info(f"Found {len(columns)} column(s) in table '{table_name}'")
+
+            return [
+                {
+                    "name": col.get("Name", ""),
+                    "data_type": col.get("DataType", ""),
+                    "is_hidden": col.get("IsHidden", False),
+                    "description": col.get("Description", ""),
+                }
+                for col in columns
+            ]
+
+        except Exception as e:
+            logger.error(f"Failed to list columns: {str(e)}")
+            return []
+
+    def execute_dax(self, workspace_id: str, dataset_id: str, dax_query: str) -> List[Dict[str, Any]]:
+        """Execute a DAX query and return results."""
+        try:
+            if not self.access_token:
+                if not self.authenticate():
+                    return []
+
+            rows = self.execute_dax_query(workspace_id, dataset_id, dax_query)
+            logger.info(f"Executed DAX query, returned {len(rows)} row(s)")
+            return rows
+
+        except Exception as e:
+            logger.error(f"Failed to execute DAX: {str(e)}")
+            return []
+
     def get_semantic_model_metadata(self, workspace_id: str, dataset_id: str) -> Dict[str, Any]:
+        """Return semantic model metadata available through REST and Execute Queries."""
+        dataset = self.get_dataset(workspace_id, dataset_id)
+        metadata = {"dataset": dataset, "tables": [], "columns": [], "measures": [], "relationships": []}
+        queries = {
+            "tables": "EVALUATE INFO.VIEW.TABLES()",
+            "columns": "EVALUATE INFO.VIEW.COLUMNS()",
+            "measures": "EVALUATE INFO.VIEW.MEASURES()",
+            "relationships": "EVALUATE INFO.VIEW.RELATIONSHIPS()",
+        }
+        for key, query in queries.items():
+            try:
+                metadata[key] = self.execute_dax_query(workspace_id, dataset_id, query)
+            except Exception as exc:
+                metadata[f"{key}_error"] = str(exc)
+        return metadata
         """Return semantic model metadata available through REST and Execute Queries."""
         dataset = self.get_dataset(workspace_id, dataset_id)
         metadata = {"dataset": dataset, "tables": [], "columns": [], "measures": [], "relationships": []}
